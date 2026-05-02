@@ -1,0 +1,26 @@
+# Bet B: tropical heads on. Compare to softmax-only baseline.
+# Pass: GSM8K +3% AND MMLU within ±0.5%.
+
+d_model: 768
+n_layers: 12
+
+patcher: {enabled: true, byte_encoder_dim: 384, max_patch_bytes: 16}
+
+attention:
+  layer_types: [dsa_mla, sliding_window]
+  mla: {n_heads: 12, d_c_latent: 384, d_qhead: 96, d_rope_decoupled: 32}
+  dsa: {enabled: true, top_k_blocks: 16, top_k_tokens_per_block: 64, block_size: 128, dense_until_seqlen: 1024}
+  sliding: {window_size: 1024}
+  tropical:
+    enabled: true       # <-- Bet B on
+    fraction_of_heads: 0.25
+    beta_warmup_min: 1.0
+    beta_warmup_max: 32.0
+    warmup_fraction: 0.05
+
+dram: {k_iterations_default: 4, k_max: 8, use_depth_attention: true, rg_flow: {enabled: false}, router: {enabled: false}}
+kalman: {enabled: false}
+moe: {enabled: true, num_routed_experts: 16, num_shared_experts: 2, active_per_token: 2, expert_dim: 1024}
+mtp: {enabled: true, depth: 2}
+precision: {forward_default: bf16, backward_default: bf16}
+training: {seed: 1234, total_steps: 50000, lr: 3.0e-3}

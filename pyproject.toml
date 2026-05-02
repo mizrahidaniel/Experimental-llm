@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sprl"
+version = "0.1.0-alpha"
+description = "SPRL-v2: Sparse-Patch Recurrent Latent — experimental LM architecture targeting a single RTX 5080"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "SPRL Authors" }]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+  "torch>=2.5",
+  "numpy>=1.26",
+  "einops>=0.8",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+  # Hardware-dependent — install separately on a Blackwell node:
+  # transformer-engine>=2.0
+  # flash-attn>=3.0
+  # triton>=3.2
+  # flash-linear-attention>=0.2
+  # microxcaling>=0.1
+  # bitsandbytes>=0.45
+  # mamba-ssm>=2.2
+]
+test = [
+  "pytest>=7.0",
+  "pytest-xdist>=3.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sprl*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
+markers = [
+  "gpu: requires a CUDA device",
+  "slow: long-running",
+  "kill_criterion: kill-experiment harness",
+]

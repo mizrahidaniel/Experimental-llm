@@ -1,0 +1,85 @@
+d_model: 768
+n_layers: 12
+vocab_size: 256
+max_seq_len_patches: 2048
+
+patcher:
+  enabled: true
+  byte_lm_layers: 2
+  byte_lm_dim: 256
+  entropy_threshold: 1.5
+  max_patch_bytes: 16
+  byte_encoder_layers: 4
+  byte_encoder_dim: 384
+  patch_dim: 768
+
+attention:
+  pattern: alternating
+  layer_types: [dsa_mla, sliding_window]
+  mla:
+    d_c_latent: 384
+    d_qhead: 96
+    d_rope_decoupled: 32
+    n_heads: 12
+  dsa:
+    enabled: true
+    indexer_type: hierarchical_hisa
+    top_k_blocks: 16
+    top_k_tokens_per_block: 64
+    block_size: 128
+    dense_until_seqlen: 1024
+  sliding:
+    window_size: 1024
+  tropical:
+    enabled: false
+
+dram:
+  enabled: true
+  weight_tied: true
+  k_iterations_default: 4
+  k_max: 8
+  use_depth_attention: true
+  rg_flow:
+    enabled: false
+  router:
+    enabled: false
+    k_max: 8
+    k_target: 4
+
+kalman:
+  enabled: false
+  rank: 8
+
+moe:
+  enabled: true
+  num_routed_experts: 16
+  num_shared_experts: 2
+  active_per_token: 2
+  expert_dim: 1024
+  expert_grouping: heterogeneous
+  aux_loss_weight: 0.001
+
+mtp:
+  enabled: true
+  depth: 2
+  loss_weight: 0.3
+
+precision:
+  forward_default: bf16
+  backward_default: bf16
+  master_weight_dtype: bf16
+  optimizer_type: adamw
+  use_galore: false
+
+training:
+  seed: 1234
+  batch_size: 32
+  seq_len_patches: 1024
+  lr: 3.0e-3
+  weight_decay: 0.1
+  warmup_steps: 2000
+  total_steps: 200000
+  grad_clip: 1.0
+  distill_enabled: false
+  nca_pretrain_enabled: true
+  curriculum_enabled: false

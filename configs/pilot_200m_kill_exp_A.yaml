@@ -1,0 +1,59 @@
+# Inherits structure from pilot_200m_bf16; overrides Bet A.
+# Run alongside the baseline; check Spearman ρ(log|Λ|, oracle surprise) ≥ 0.5
+# and validation loss within ±0.2% of a Mamba-3 baseline.
+
+d_model: 768
+n_layers: 12
+vocab_size: 256
+max_seq_len_patches: 2048
+
+patcher:
+  enabled: true
+  byte_lm_layers: 2
+  byte_lm_dim: 256
+  entropy_threshold: 1.5
+  max_patch_bytes: 16
+  byte_encoder_layers: 4
+  byte_encoder_dim: 384
+
+attention:
+  pattern: alternating
+  layer_types: [dsa_mla, sliding_window]
+  mla: {d_c_latent: 384, d_qhead: 96, d_rope_decoupled: 32, n_heads: 12}
+  dsa: {enabled: true, top_k_blocks: 16, top_k_tokens_per_block: 64, block_size: 128, dense_until_seqlen: 1024}
+  sliding: {window_size: 1024}
+  tropical: {enabled: false}
+
+dram:
+  enabled: true
+  k_iterations_default: 4
+  k_max: 8
+  use_depth_attention: true
+  rg_flow: {enabled: false}
+  router:
+    enabled: true     # active-inference router uses Bet A's log_det_Lambda
+    k_max: 8
+    k_target: 4
+
+kalman:
+  enabled: true       # <-- Bet A on
+  rank: 8
+  eps_diag: 1.0e-4
+  chunk_size: 256
+
+moe:
+  enabled: true
+  num_routed_experts: 16
+  num_shared_experts: 2
+  active_per_token: 2
+  expert_dim: 1024
+  aux_loss_weight: 0.001
+
+mtp: {enabled: true, depth: 2, loss_weight: 0.3}
+precision: {forward_default: bf16, backward_default: bf16, master_weight_dtype: bf16}
+training:
+  seed: 1234
+  batch_size: 32
+  seq_len_patches: 1024
+  lr: 3.0e-3
+  total_steps: 50000

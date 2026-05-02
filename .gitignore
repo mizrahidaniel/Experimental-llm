@@ -1,0 +1,39 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.env
+.coverage
+htmlcov/
+
+# Run artifacts
+checkpoints/
+runs/
+wandb/
+logs/
+*.pt
+*.bin
+*.safetensors
+*.npy
+*.npz
+*.parquet
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Data
+data/cache/
+data/raw/
+data/processed/

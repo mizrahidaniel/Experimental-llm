@@ -1,0 +1,18 @@
+# Core (CPU-OK so unit tests run anywhere)
+torch>=2.5
+numpy>=1.26
+einops>=0.8
+pyyaml>=6.0
+
+# Test
+pytest>=7.0
+pytest-xdist>=3.5
+
+# GPU-only (install on a Blackwell box; commented because they need wheels we don't ship)
+# transformer-engine>=2.0
+# flash-attn>=3.0
+# triton>=3.2
+# flash-linear-attention>=0.2
+# microxcaling>=0.1
+# bitsandbytes>=0.45
+# mamba-ssm>=2.2
