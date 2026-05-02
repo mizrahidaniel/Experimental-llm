@@ -30,10 +30,38 @@ def distillation_kl_loss(
     student_logits: Tensor,
     teacher_logits: Tensor,
     temperature: float = 2.0,
+    direction: str = "teacher_forward_kl",
 ) -> Tensor:
-    s = F.log_softmax(student_logits / temperature, dim=-1)
-    t = F.softmax(teacher_logits / temperature, dim=-1)
-    return F.kl_div(s, t, reduction="batchmean") * (temperature ** 2)
+    """KL divergence between student and teacher distributions.
+
+    `direction`:
+      - "teacher_forward_kl": KL(teacher || student); standard distillation,
+        mode-covering. Encourages student to put mass where teacher does.
+      - "reverse_kl": KL(student || teacher); MiniLLM-style, mode-seeking.
+    """
+    if direction == "teacher_forward_kl":
+        s = F.log_softmax(student_logits / temperature, dim=-1)
+        t = F.softmax(teacher_logits / temperature, dim=-1)
+        return F.kl_div(s, t, reduction="batchmean") * (temperature ** 2)
+    if direction == "reverse_kl":
+        s = F.softmax(student_logits / temperature, dim=-1)
+        t = F.log_softmax(teacher_logits / temperature, dim=-1)
+        return F.kl_div(t, s, reduction="batchmean") * (temperature ** 2)
+    raise ValueError(f"unknown KL direction: {direction!r}")
+
+
+def select_teacher_for_phase(cfg, phase: str) -> str:
+    """Phase-aware teacher selection per spec §6.4.
+
+    `phase`:
+      - "3a" / "raw_web"   → teacher_base (avoid RLHF style on raw text)
+      - "3c" / "synthetic" → teacher_instruct (align student behaviour)
+    """
+    if phase in ("3a", "raw_web", "distill"):
+        return getattr(cfg.training, "distill_teacher_base", cfg.training.distill_teacher)
+    if phase in ("3c", "synthetic", "post_training"):
+        return getattr(cfg.training, "distill_teacher_instruct", cfg.training.distill_teacher)
+    return cfg.training.distill_teacher
 
 
 def sparse_topk_to_dense(

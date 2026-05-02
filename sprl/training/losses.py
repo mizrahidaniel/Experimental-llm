@@ -20,6 +20,7 @@ def compute_total_loss(
     teacher_logits: Optional[Tensor] = None,
     *,
     distill_kl_weight: float = 0.0,
+    distill_kl_direction: str = "teacher_forward_kl",
     mtp_targets: Optional[Tensor] = None,
     mtp_weight: float = 0.3,
     rg_weight: float = 1.0e-3,
@@ -28,16 +29,21 @@ def compute_total_loss(
 ) -> tuple[Tensor, Dict[str, float]]:
     """Returns (total_loss, breakdown).
 
-    byte_targets: [B, S_patches, n_bytes] — int. Use -100 for ignore.
-    teacher_logits: [B, S_patches, n_bytes, vocab] — soft KD targets (log-probs OK,
-        we'll normalize). Pass None if no distillation.
-    mtp_targets: [B, S_patches, depth] — for MTP head.
+    byte_targets: int targets aligned with `out.byte_logits`. Shape:
+      - BLT path: [B, S_patches, max_patch_bytes]
+      - BPE path: [B, S_tokens]
+      Use -100 for ignore.
+    teacher_logits: soft KD targets, same shape as `out.byte_logits` but in
+      the *distillation* vocab. For teacher_token_kl that's the student vocab;
+      for auxiliary_teacher_token_head that's the teacher vocab and is paired
+      with `out.aux_logits` (the LM head still trains on student-vocab CE).
     """
     parts: Dict[str, float] = {}
 
-    # Main LM loss.
-    logits = out.byte_logits  # [B, S, B_p, V]
-    B, S, Bp, V = logits.shape
+    # Main LM loss. Reshape-to-flat handles both BLT [B, S, Bp, V] and
+    # BPE [B, S, V] shapes.
+    logits = out.byte_logits
+    V = logits.shape[-1]
     lm_loss = F.cross_entropy(
         logits.reshape(-1, V),
         byte_targets.reshape(-1),
@@ -49,10 +55,29 @@ def compute_total_loss(
 
     # Distillation.
     if teacher_logits is not None and distill_kl_weight > 0.0:
+        # When the model has an auxiliary teacher-token head (vocab mismatch
+        # path), distill against `aux_logits` instead of the main LM head's
+        # logits — those are in the wrong vocab space.
+        kl_logits = out.aux_logits if out.aux_logits is not None else logits
+        if kl_logits.shape[-1] != teacher_logits.shape[-1]:
+            raise ValueError(
+                "teacher_logits vocab does not match the distillation head "
+                f"({kl_logits.shape[-1]} vs {teacher_logits.shape[-1]}). "
+                "If your tokenizers don't align, use "
+                "distill_mode=auxiliary_teacher_token_head."
+            )
         T = 2.0
-        student_logp = F.log_softmax(logits.reshape(-1, V) / T, dim=-1)
-        teacher_p = F.softmax(teacher_logits.reshape(-1, V) / T, dim=-1)
-        kl = F.kl_div(student_logp, teacher_p, reduction="batchmean") * (T ** 2)
+        Vd = kl_logits.shape[-1]
+        if distill_kl_direction == "teacher_forward_kl":
+            student_logp = F.log_softmax(kl_logits.reshape(-1, Vd) / T, dim=-1)
+            teacher_p = F.softmax(teacher_logits.reshape(-1, Vd) / T, dim=-1)
+            kl = F.kl_div(student_logp, teacher_p, reduction="batchmean") * (T ** 2)
+        elif distill_kl_direction == "reverse_kl":
+            student_p = F.softmax(kl_logits.reshape(-1, Vd) / T, dim=-1)
+            teacher_logp = F.log_softmax(teacher_logits.reshape(-1, Vd) / T, dim=-1)
+            kl = F.kl_div(teacher_logp, student_p, reduction="batchmean") * (T ** 2)
+        else:
+            raise ValueError(f"unknown distill_kl_direction: {distill_kl_direction!r}")
         parts["kl_distill"] = float(kl.item())
         total = (1 - distill_kl_weight) * total + distill_kl_weight * kl
 

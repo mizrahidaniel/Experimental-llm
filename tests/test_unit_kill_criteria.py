@@ -16,13 +16,19 @@ from sprl.utils.diagnostics import (
 
 
 def test_kill_A_synthetic_pass():
-    """Kalman log-det should track surprise: if we *make* it correlate, ρ ≈ 1."""
+    """Bet A's kill metric is ρ(uncertainty, surprise) ≥ 0.5 with uncertainty = -log_det Λ.
+
+    Λ is a precision matrix; high log_det ⇒ low uncertainty ⇒ low surprise. The
+    kill criterion correlates the *signed* uncertainty against surprise and
+    expects positive correlation.
+    """
     surprise = torch.linspace(0, 1, 100)
-    log_det = -surprise + 0.01 * torch.randn(100)
-    # log|Λ| should be high where surprise is low.
-    rho = spearman_rho(log_det.tolist(), surprise.tolist())
-    assert rho < -0.9  # strongly anticorrelated → ρ ≈ -1
-    assert abs(rho) >= 0.5  # passes "≥ 0.5 in absolute value"
+    log_det = -surprise + 0.01 * torch.randn(100)  # synthetic: planted anti-corr
+    uncertainty = (-log_det).tolist()
+    rho = spearman_rho(uncertainty, surprise.tolist())
+    # uncertainty should track surprise positively.
+    assert rho > 0.9
+    assert rho >= 0.5  # passes Bet A's signed kill criterion
 
 
 def test_kill_A_synthetic_fail():

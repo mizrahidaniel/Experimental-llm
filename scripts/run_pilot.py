@@ -31,14 +31,25 @@ def make_synthetic_batch(cfg: SPRLConfig, batch_size: int = 2, n_patches: int = 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--config", type=str, default="configs/pilot_200m_bf16.yaml")
+    p.add_argument("--variant", choices=["recommended", "recommended_plus_tropical_probe", "original_bets_mini", "fallback_boring"], default=None,
+                   help="Variant shortcut (default: recommended).")
+    p.add_argument("--config", type=str, default=None,
+                   help="Explicit config path (overrides --variant).")
     p.add_argument("--steps", type=int, default=2)
+    p.add_argument("--dry_run", action="store_true",
+                   help="Build the model + print the variant banner; no training step.")
     args = p.parse_args()
 
+    from sprl.variants import print_variant_banner, resolve_variant_config
+
+    cfg_path = resolve_variant_config(args.variant, args.config, full_run=False)
     seed_everything(1234)
-    cfg = SPRLConfig.from_yaml(args.config) if Path(args.config).exists() else SPRLConfig()
+    cfg = SPRLConfig.from_yaml(cfg_path)
+    print_variant_banner(cfg, variant=args.variant)
     model = SPRLv2(cfg)
     print(f"Built SPRLv2: {model.num_params() / 1e6:.1f}M params")
+    if args.dry_run:
+        return
 
     optim = build_optimizer(
         model, lr=cfg.training.lr, weight_decay=cfg.training.weight_decay,

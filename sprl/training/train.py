@@ -59,7 +59,7 @@ def train_one_step(
             cfg.attention.tropical.beta_warmup_min,
             cfg.attention.tropical.beta_warmup_max,
         )
-        for layer in model.layers:
+        for layer in model._iter_layers():
             tropical = getattr(getattr(layer, "attn", None), "tropical", None)
             if tropical is not None:
                 tropical.set_beta(beta)
@@ -85,8 +85,9 @@ def train_one_step(
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.grad_clip)
     optimizer.step()
 
-    # ALF bias-update (per step, post-optimizer).
-    for layer in model.layers:
+    # ALF bias-update (per step, post-optimizer). Works under either layout:
+    # `_iter_layers` covers both uniform-layer and recurrent-middle-block.
+    for layer in model._iter_layers():
         ffn = getattr(layer, "ffn", None)
         if hasattr(ffn, "step_balancer"):
             ffn.step_balancer()

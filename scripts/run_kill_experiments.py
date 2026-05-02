@@ -43,10 +43,13 @@ def kill_a(cfg_path: str, steps: int = 4) -> dict:
             # Oracle surprise approximated by the per-step LM loss in this stub.
             oracle_surprises.append(m["lm"])
 
-    rho = spearman_rho(log_dets, oracle_surprises) if len(log_dets) >= 3 else 0.0
+    # Λ is a precision (high log_det Λ ⇒ certain). Uncertainty = -log_det Λ.
+    # Bet A passes iff uncertainty correlates with oracle surprise (ρ ≥ 0.5).
+    uncertainty = [-x for x in log_dets]
+    rho = spearman_rho(uncertainty, oracle_surprises) if len(log_dets) >= 3 else 0.0
     return {
         "experiment": "A_kalman_memory",
-        "spearman_rho": rho,
+        "spearman_rho_uncertainty_vs_surprise": rho,
         "pass": rho >= 0.5,
     }
 
