@@ -36,6 +36,7 @@ from sprl.recurrent import (
     DRAMBlock,
     EntropyRouter,
     RGFlowRegularizer,
+    TokenLevelDRAMBlock,
 )
 
 
@@ -101,13 +102,16 @@ class SPRLv2(nn.Module):
             )
 
         # ----- main backbone ------------------------------------------
+        # We always instantiate TokenLevelDRAMBlock so per-token K* can drive
+        # per-token compute. With a constant K* it degenerates to the same
+        # behaviour as DRAMBlock(n_iter=K).
         self.layers: List[DRAMBlock] = nn.ModuleList()
         for i in range(cfg.n_layers):
             layer_type = cfg.attention.layer_types[i % len(cfg.attention.layer_types)]
             attn = make_attention(layer_type, cfg.attention, cfg.d_model)
             ffn = make_ffn(cfg.moe, cfg.d_model)
             inner = SPRLLayer(cfg.d_model, attn_module=attn, ffn_module=ffn)
-            block = DRAMBlock(
+            block = TokenLevelDRAMBlock(
                 d_model=cfg.d_model,
                 attention_module=inner.attn,
                 ffn_module=inner.ffn,
@@ -174,25 +178,35 @@ class SPRLv2(nn.Module):
             log_det_Lambda = kal["log_det_Lambda"]
             diagnostics["log_det_Lambda_mean"] = float(log_det_Lambda.mean().item())
 
-        # Compute iteration plan.
+        # Compute iteration plan (per-token K*).
         if isinstance(self.router, ActiveInferenceRouter):
             G = self.router.compute_G(z, log_det_Lambda)
         else:
             G = self.router.compute_G(z)
-        k_per_token = self.router.k_star(G)  # [B, S]
+        k_per_token = self.router.k_star(G)  # [B, S], soft float (with STE)
         diagnostics["mean_k"] = float(k_per_token.mean().item())
         diagnostics["max_k"] = float(k_per_token.max().item())
 
-        # Default per-layer iteration count; for now we use the *mean* K* across
-        # tokens as the per-layer iteration count (token-level masking is heavier
-        # and only enabled for DRAM blocks via TokenLevelDRAMBlock).
-        n_iter = max(1, int(round(float(k_per_token.float().mean().item()))))
-        n_iter = min(n_iter, self.cfg.dram.k_max)
+        # Per-token integer iteration counts driving the TokenLevelDRAMBlock.
+        # The router emits a soft (STE-rounded) float; clamp to [1, k_max] and
+        # floor/round to integer for the mask. A floor of 1 ensures every
+        # token gets at least one iteration.
+        k_int = (
+            k_per_token.detach()
+            .round()
+            .clamp(min=1.0, max=float(self.cfg.dram.k_max))
+            .long()
+        )
         if n_iter_default is not None:
-            n_iter = max(n_iter, n_iter_default)
+            k_int = k_int.clamp(min=int(n_iter_default))
 
         for layer in self.layers:
-            z, hist = layer(z, n_iter=n_iter, record_history=(self.rg_flow is not None))
+            z, hist = layer.forward_token_level(
+                z,
+                k_per_token=k_int,
+                record_history=(self.rg_flow is not None),
+                max_iter_cap=self.cfg.dram.k_max,
+            )
             if self.rg_flow is not None:
                 all_iters.extend(hist[1:])  # avoid double-counting the start
 

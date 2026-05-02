@@ -13,7 +13,7 @@ The number of iterations K can be:
 
 from __future__ import annotations
 
-from typing import Callable, List, Optional
+from typing import List, Optional
 
 import torch
 from torch import Tensor, nn
@@ -68,7 +68,7 @@ class DRAMBlock(nn.Module):
 
 
 class TokenLevelDRAMBlock(DRAMBlock):
-    """Like DRAMBlock but supports per-token iteration counts (MoR-style).
+    """Per-token iteration count (MoR-style).
 
     Uses a mask: at iteration k, only update tokens whose K*(t) > k. Frozen
     tokens carry their last value forward. Practical for batched compute.
@@ -79,18 +79,36 @@ class TokenLevelDRAMBlock(DRAMBlock):
         z0: Tensor,
         k_per_token: Tensor,
         record_history: bool = False,
+        max_iter_cap: Optional[int] = None,
     ) -> tuple[Tensor, List[Tensor]]:
-        """z0: [B, S, d]. k_per_token: [B, S] long, ≥ 1.
+        """z0: [B, S, d]. k_per_token: [B, S] long (≥ 1) or float (STE).
 
-        Returns z_final and (optionally) the iteration history.
+        Tokens whose iteration count is reached freeze: their value is held
+        constant for the remaining iterations. The mask is built from a hard
+        comparison; for STE/float k_per_token we compare against `.detach()`.
+
+        Args:
+          max_iter_cap: optional upper bound on iterations (uses min with the
+            observed max).
         """
-        max_iter = int(k_per_token.max().item())
+        if k_per_token.dtype.is_floating_point:
+            max_iter = int(k_per_token.detach().max().item())
+        else:
+            max_iter = int(k_per_token.max().item())
+        if max_iter_cap is not None:
+            max_iter = min(max_iter, int(max_iter_cap))
+        max_iter = max(1, max_iter)
+
         z = z0
         history: List[Tensor] = [z0]
         for k in range(max_iter):
             mask = (k_per_token > k).to(z.dtype).unsqueeze(-1)  # [B, S, 1]
-            z_new = self.step(z, history if self.use_depth_attention else [])
+            z_new = self.step(
+                z, history if self.use_depth_attention else []
+            )
             z = z_new * mask + z * (1.0 - mask)
-            if record_history:
+            if record_history or self.use_depth_attention:
                 history.append(z)
+        if not record_history:
+            history = [z0, z]
         return z, history
