@@ -9,7 +9,63 @@ identical tokenizer**. SPRL-v3.1 enforces this in `SPRLConfig.validate()`.
 |---|---|---|
 | `teacher_token_kl` | Student vocab == teacher vocab (same tokenizer) | Student LM-head logits vs teacher logits |
 | `auxiliary_teacher_token_head` | Tokenizers differ (e.g. BLT bytes vs Llama BPE) | A separate aux head's logits (in teacher vocab) vs teacher logits; main LM head trains via student-vocab CE only |
-| `sequence_level` | Tokenizers differ AND you only have teacher samples (no logits) | Kim & Rush 2016: student CE on teacher's argmax sequence |
+| `sequence_level` | You don't want to precompute or stream teacher logits | Kim & Rush 2016: student CE on teacher's *generated text*. No KL, no logit storage. |
+
+## End-to-end recipe (no precompute step)
+
+If you're not ready to spend $100-300 on a cloud GPU to precompute 6-12 TB
+of teacher logits, sequence-level distillation is the pragmatic alternative.
+Two scripts wrap the whole flow:
+
+```bash
+# 1. Sample teacher completions (one-time, run on whatever GPU you have).
+#    Falls back to MarkovTeacher when transformers / GPU unavailable, so the
+#    pipeline can be smoke-tested offline.
+python scripts/generate_distill_corpus.py \
+    --teacher meta-llama/Llama-3.1-8B-Instruct \
+    --prompts data/seed_prompts.jsonl \
+    --output  data/distill_corpus/llama_3_1_8b.jsonl \
+    --num-samples 100000 \
+    --max-new-tokens 512 \
+    --temperature 0.8
+
+# 2. Tokenize the resulting corpus with the teacher's tokenizer.
+#    Resumable: re-running picks up where it left off.
+python scripts/tokenize_corpus.py \
+    --tokenizer llama_3_1_8b \
+    --input  data/distill_corpus/llama_3_1_8b.jsonl \
+    --output data/tokenized/llama_3_1_8b_distill \
+    --field  completion \
+    --shard-size 1000000
+
+# 3. Train the student on the tokenized corpus with sequence_level distillation.
+#    The student's CE head treats teacher-generated tokens as ground truth;
+#    no KL term is added, so no teacher logits are needed at training time.
+#    Set distill_mode=sequence_level so the validator doesn't demand
+#    distill_store_teacher_logsumexp etc.
+python scripts/run_full_pretrain.py \
+    --variant recommended
+```
+
+Pair `tokenized_iterator(...)` from `sprl.data` with the existing
+`train_one_step` to drive the loop:
+
+```python
+from sprl.data import tokenized_iterator
+
+for batch in tokenized_iterator(
+    "data/tokenized/llama_3_1_8b_distill",
+    batch_size=cfg.training.batch_size,
+    seq_len=cfg.training.seq_len_patches,
+):
+    # batch = {"token_ids": [B, S], "mtp_targets": [B, S, depth]}
+    loss = train_one_step(model, batch, optim, cfg, step=step)
+```
+
+Quality vs token-level KL: ~50-70% per token (per MiniLLM ablations); zero
+infrastructure overhead. Use this path for a first 5080 run; promote to
+`teacher_token_kl` only if you've measured that distillation is the
+bottleneck.
 
 ## Hard validation matrix
 

@@ -500,6 +500,18 @@ class SPRLConfig:
                     f"'reverse_kl'; got {self.training.distill_kl_direction!r}."
                 )
 
+        # (11b) Known distill_mode.
+        _valid_distill_modes = {
+            "teacher_token_kl",
+            "auxiliary_teacher_token_head",
+            "sequence_level",
+        }
+        if self.training.distill_enabled and self.training.distill_mode not in _valid_distill_modes:
+            raise ValueError(
+                "training.distill_mode must be one of "
+                f"{sorted(_valid_distill_modes)}; got {self.training.distill_mode!r}."
+            )
+
         # (12) Top-K logit storage requires logsumexp for normalized KL.
         if self.training.distill_enabled and self.training.distill_mode == "teacher_token_kl":
             if not self.training.distill_store_indices or not self.training.distill_store_logits:

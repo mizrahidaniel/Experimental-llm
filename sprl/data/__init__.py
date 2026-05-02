@@ -37,6 +37,13 @@ from sprl.data.rstar_math import rstar_math_stream
 from sprl.data.nca_trajectories import nca_trajectory_stream
 from sprl.data.long_context import long_context_stream
 from sprl.data.loader import build_data_iterator, DataConfig
+from sprl.data.tokenized import (
+    TokenizedShardDataset,
+    TokenizedManifest,
+    pack_batches,
+    read_manifest,
+    tokenized_iterator,
+)
 
 __all__ = [
     "PatcherCollator",
@@ -55,4 +62,9 @@ __all__ = [
     "long_context_stream",
     "build_data_iterator",
     "DataConfig",
+    "TokenizedShardDataset",
+    "TokenizedManifest",
+    "pack_batches",
+    "read_manifest",
+    "tokenized_iterator",
 ]
