@@ -1,0 +1,10 @@
+{"problem": "What is 7*8 + 3?", "trace": ["7*8 = 56", "56 + 3 = 59"], "verified_answer": "59"}
+{"problem": "Solve for x: 2x + 5 = 13.", "trace": ["2x + 5 = 13", "2x = 13 - 5 = 8", "x = 8 / 2 = 4"], "verified_answer": "4"}
+{"problem": "What is the area of a circle with radius 3?", "trace": ["A = pi * r^2", "A = pi * 9", "A ~= 28.27"], "verified_answer": "9*pi (~28.27)"}
+{"problem": "Sum the integers from 1 to 100.", "trace": ["Use S = n*(n+1)/2", "S = 100 * 101 / 2", "S = 5050"], "verified_answer": "5050"}
+{"problem": "What is the derivative of x^3 + 2x?", "trace": ["d/dx x^3 = 3x^2", "d/dx 2x = 2", "Sum: 3x^2 + 2"], "verified_answer": "3x^2 + 2"}
+{"problem": "If a coin lands heads with probability 0.6, what is the probability of exactly 2 heads in 3 tosses?", "trace": ["C(3,2) = 3", "P = 3 * 0.6^2 * 0.4 = 3 * 0.36 * 0.4", "= 0.432"], "verified_answer": "0.432"}
+{"problem": "What is gcd(48, 18)?", "trace": ["48 = 2*18 + 12", "18 = 1*12 + 6", "12 = 2*6 + 0", "gcd = 6"], "verified_answer": "6"}
+{"problem": "Solve the quadratic x^2 - 5x + 6 = 0.", "trace": ["Factor: (x-2)(x-3) = 0", "Roots: x = 2 or x = 3"], "verified_answer": "x = 2 or x = 3"}
+{"problem": "Compute the limit of (sin x)/x as x -> 0.", "trace": ["Standard limit", "lim_{x->0} sin(x)/x = 1"], "verified_answer": "1"}
+{"problem": "How many ways to choose 3 items from 7?", "trace": ["C(7,3) = 7! / (3! * 4!)", "= (7*6*5) / 6", "= 35"], "verified_answer": "35"}

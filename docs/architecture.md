@@ -72,12 +72,34 @@ output_t = Decode_byte(z_{k*(t)})                      // MTP + byte LM head
 | Byte LM head | `sprl/heads/byte_lm_head.py` |
 | Top-level model | `sprl/model.py` |
 
-## Memory budget (target 200M pilot)
+## Memory budget
 
-The pilot config (`configs/pilot_200m_bf16.yaml`) has 16 routed + 2 shared
-experts at `expert_dim=1024`, `d_model=768`, `n_layers=12`. The total
-parameter count is ~700M (with the heterogeneous MoE multiplier); active
-params per token after top-2 routing are ≈ 150M.
+### Stage-1 100M kill-exp pilots (`configs/pilot_100m_*.yaml`)
 
-For the full 1.5–2B-active config (Stage 3), see the spec's table; expect
-~16 GB tight on a 5080 with NVFP4, gradient checkpointing, and 8-bit AdamW.
+`d_model=512`, `n_layers=12`, MoE 8 routed + 1 shared, top-2, `expert_dim=1024`.
+Total ~245M params; ~80M active per token. Fits comfortably on a 5080 in
+BF16 with batch-size 32 / seq-len 512. Each kill experiment runs in ~4 hours.
+
+### Stage-3 500M-active full run (`configs/full_500m_bf16.yaml`) — realistic plan
+
+`d_model=1024`, `n_layers=16`, MoE 32 routed + 2 shared, top-4,
+`expert_dim=2048`. Total ~2B params; ~500M active per token. Budgeted for
+~50B tokens in ≤ 1 week of 5080 BF16 wall-clock with gradient checkpointing,
+8-bit AdamW, and GaLore on MoE expert weights. Memory budget:
+
+| Component | BF16 |
+|---|---|
+| Model weights (~2B total) | ~4.0 GB |
+| Optimizer states (8-bit AdamW + GaLore) | ~1.0 GB |
+| Activations (ckpt every 2 layers, 1024-patch context) | ~4.0 GB |
+| KV (MLA latent rank 384) + Kalman state | ~0.3 GB |
+| Workspace | ~1.0 GB |
+| **Total** | **~10 GB** |
+
+Promote to FP8 forward (Tier 2) after 5B tokens of stable BF16 to extend
+the token budget to ~80–100B. NVFP4 (Tier 3) is the stretch path.
+
+### Original ambition (1.5–2B active / 1T tokens / 6 weeks)
+
+The v2 spec targeted a much larger run; this codebase ships the architecture
+that would support it but does not ship a 1.5–2B config by default.

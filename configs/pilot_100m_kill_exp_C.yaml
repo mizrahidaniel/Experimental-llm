@@ -1,0 +1,58 @@
+# Kill experiment C: Bet C — RG-flow regularizer with rank-32 T_b.
+#
+# Pass criteria (per spec §6.2):
+#   1. Loss-vs-iterations power-law fit R² ≥ 0.9
+#   2. ‖T_b − I‖_F ≥ 0.1 (T_b is non-trivial)
+#   3. S5 / state-tracking accuracy +10% over no-RG baseline
+#
+# Compare against pilot_100m_bf16.yaml. ~4 hours on 5080 BF16.
+
+d_model: 512
+n_layers: 12
+vocab_size: 256
+max_seq_len_patches: 1024
+
+patcher: {enabled: true, byte_lm_layers: 2, byte_lm_dim: 192, max_patch_bytes: 16, byte_encoder_dim: 256}
+
+attention:
+  pattern: alternating
+  layer_types: [dsa_mla, sliding_window]
+  mla: {d_c_latent: 256, d_qhead: 64, d_rope_decoupled: 16, n_heads: 8}
+  dsa: {enabled: true, indexer_type: hierarchical_hisa, top_k_blocks: 8, top_k_tokens_per_block: 64, block_size: 128, dense_until_seqlen: 1024}
+  sliding: {window_size: 1024}
+  tropical: {enabled: false}
+
+dram:
+  k_iterations_default: 3
+  k_max: 6
+  use_depth_attention: true
+  rg_flow:
+    enabled: true                 # <-- Bet C on
+    rank_T_b: 32
+    init_method: marchenko_pastur
+    alpha_ramp_steps_frac: 0.1
+    alpha_target: 1.0e-3
+  router: {enabled: false}
+
+kalman: {enabled: false}
+
+moe:
+  enabled: true
+  num_routed_experts: 8
+  num_shared_experts: 1
+  active_per_token: 2
+  expert_dim: 1024
+  aux_loss_weight: 0.001
+
+mtp: {enabled: true, depth: 2, loss_weight: 0.3}
+precision: {forward_default: bf16, backward_default: bf16, master_weight_dtype: bf16}
+
+training:
+  seed: 1234
+  batch_size: 32
+  seq_len_patches: 512
+  lr: 6.0e-3
+  warmup_steps: 1000
+  total_steps: 30000
+  grad_clip: 1.0
+  distill_enabled: false

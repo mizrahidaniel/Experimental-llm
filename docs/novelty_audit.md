@@ -3,6 +3,14 @@
 A line-by-line accounting of what is genuinely new in SPRL-v2 vs. existing
 2025-2026 prior art.
 
+The realistic-scale plan (500M-active / 50B tokens / 1 week on a 5080)
+keeps the architecture identical to the original v2 spec — same three Bets,
+same backbone — only the model dimensions, MoE granularity, and token
+budget shrink. No mechanism was added or replaced for the smaller scale.
+Teacher distillation remains shipped (the offline top-32 NPZ pipeline is
+in `sprl/training/teacher_logits.py`) but defaults to off in the realistic
+plan; local training is the default.
+
 ## Boring backbone (all derivative)
 
 - **DSA-under-MLA** — DeepSeek V3.2 (arXiv 2512.02556).

@@ -1,0 +1,74 @@
+# Fallback config: all three novel bets failed their kill criteria.
+#
+# Per spec §6.3, this configuration ships the "boring SOTA" backbone:
+# DSA-under-MLA + alternating sliding window + fine-grained MoE with ALF
+# balancing + MTP head + BLT entropy patching + NCA pre-pre-training.
+#
+# This is a credible 500M-active baseline (SmolLM2 / TinyLlama tier) even
+# without any of Bets A/B/C contributing. Use as the "minimum viable Stage 3"
+# if Stage-1 demotes everything novel.
+
+d_model: 1024
+n_layers: 16
+vocab_size: 256
+max_seq_len_patches: 8192
+
+patcher:
+  enabled: true
+  byte_lm_layers: 2
+  byte_lm_dim: 256
+  entropy_threshold: 1.5
+  max_patch_bytes: 16
+  byte_encoder_layers: 4
+  byte_encoder_dim: 384
+  patch_dim: 1024
+
+attention:
+  pattern: alternating
+  layer_types: [dsa_mla, sliding_window]
+  mla: {d_c_latent: 384, d_qhead: 96, d_rope_decoupled: 32, n_heads: 16}
+  dsa: {enabled: true, indexer_type: hierarchical_hisa, top_k_blocks: 16, top_k_tokens_per_block: 64, block_size: 128, dense_until_seqlen: 1024}
+  sliding: {window_size: 1024}
+  tropical: {enabled: false}     # <-- all bets off
+
+dram:
+  enabled: true
+  k_iterations_default: 1        # no recurrence (constant K=1) without router
+  k_max: 1
+  use_depth_attention: false
+  rg_flow: {enabled: false}      # <-- Bet C off
+  router: {enabled: false}
+
+kalman: {enabled: false}         # <-- Bet A off
+
+moe:
+  enabled: true
+  num_routed_experts: 32
+  num_shared_experts: 2
+  active_per_token: 4
+  expert_dim: 2048
+  expert_grouping: heterogeneous
+  aux_loss_weight: 0.001
+
+mtp: {enabled: true, depth: 2, loss_weight: 0.3}
+
+precision:
+  forward_default: bf16
+  backward_default: bf16
+  master_weight_dtype: bf16
+  optimizer_type: adamw_8bit
+  use_galore: true
+  galore_rank: 128
+  galore_targets: [moe_expert_w1, moe_expert_w2, moe_expert_w3]
+
+training:
+  seed: 1234
+  batch_size: 16
+  seq_len_patches: 1024
+  lr: 3.0e-3
+  weight_decay: 0.1
+  warmup_steps: 2000
+  total_steps: 100000
+  grad_clip: 1.0
+  distill_enabled: false
+  nca_pretrain_enabled: true

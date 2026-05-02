@@ -115,11 +115,11 @@ def main():
 
     results = []
     if args.bet in ("A", "all"):
-        results.append(kill_a("configs/pilot_200m_kill_exp_A.yaml", steps=args.steps))
+        results.append(kill_a("configs/pilot_100m_kill_exp_A.yaml", steps=args.steps))
     if args.bet in ("B", "all"):
-        results.append(kill_b("configs/pilot_200m_kill_exp_B.yaml", steps=args.steps))
+        results.append(kill_b("configs/pilot_100m_kill_exp_B.yaml", steps=args.steps))
     if args.bet in ("C", "all"):
-        results.append(kill_c("configs/pilot_200m_kill_exp_C.yaml", steps=args.steps))
+        results.append(kill_c("configs/pilot_100m_kill_exp_C.yaml", steps=args.steps))
 
     for r in results:
         print(r)
