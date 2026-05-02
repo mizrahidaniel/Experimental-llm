@@ -35,6 +35,7 @@ from sprl.recurrent import (
     ActiveInferenceRouter,
     DRAMBlock,
     EntropyRouter,
+    RecurrentMiddleBlock,
     RGFlowRegularizer,
     TokenLevelDRAMBlock,
 )
@@ -83,8 +84,16 @@ class SPRLv2(nn.Module):
                 eps_diag=cfg.kalman.eps_diag,
                 chunk_size=cfg.kalman.chunk_size,
             )
+            # v3.1: gated residual fusion. `passive_probe` mode produces an
+            # output path so the gate gets LM gradients; `diagnostic_probe`
+            # zeros the gate (output is for logging only).
+            init = float(cfg.kalman.fusion_gate_init or -3.0)
+            self.kalman_fusion_gate = nn.Parameter(torch.tensor(init))
+            self.kalman_diagnostic_only = (cfg.kalman.mode == "diagnostic_probe")
         else:
             self.kalman = None
+            self.kalman_fusion_gate = None
+            self.kalman_diagnostic_only = False
 
         # ----- compute router -----------------------------------------
         if cfg.dram.router.enabled and cfg.kalman.enabled:
@@ -102,25 +111,52 @@ class SPRLv2(nn.Module):
             )
 
         # ----- main backbone ------------------------------------------
-        # We always instantiate TokenLevelDRAMBlock so per-token K* can drive
-        # per-token compute. With a constant K* it degenerates to the same
-        # behaviour as DRAMBlock(n_iter=K).
-        self.layers: List[DRAMBlock] = nn.ModuleList()
-        for i in range(cfg.n_layers):
-            layer_type = cfg.attention.layer_types[i % len(cfg.attention.layer_types)]
-            attn = make_attention(layer_type, cfg.attention, cfg.d_model)
-            ffn = make_ffn(cfg.moe, cfg.d_model)
-            inner = SPRLLayer(cfg.d_model, attn_module=attn, ffn_module=ffn)
-            block = TokenLevelDRAMBlock(
-                d_model=cfg.d_model,
-                attention_module=inner.attn,
-                ffn_module=inner.ffn,
-                use_depth_attention=cfg.dram.use_depth_attention,
-            )
-            # Register layer norms by re-using SPRLLayer's norms inside DRAMBlock.
-            block.norm1 = inner.norm_attn
-            block.norm2 = inner.norm_ffn
-            self.layers.append(block)
+        # Two layouts:
+        #   "uniform_layers"          (legacy): every layer iterated K times
+        #                              via TokenLevelDRAMBlock; per-token K*.
+        #   "recurrent_middle_block"  (v3.1):  prefix(P) + tied-cell(C)·K +
+        #                              suffix(S); per-block K* (one K per
+        #                              batch element).
+        self.cell_type = cfg.dram.cell_type
+        if self.cell_type == "recurrent_middle_block":
+            P = cfg.dram.prefix_layers
+            C = cfg.dram.recurrent_cell_layers
+            S = cfg.dram.suffix_layers
+            assert C > 0, "recurrent_middle_block requires recurrent_cell_layers > 0"
+
+            def _make_layer(idx: int) -> SPRLLayer:
+                t = cfg.attention.layer_types[idx % len(cfg.attention.layer_types)]
+                attn = make_attention(t, cfg.attention, cfg.d_model)
+                ffn = make_ffn(cfg.moe, cfg.d_model)
+                return SPRLLayer(cfg.d_model, attn_module=attn, ffn_module=ffn)
+
+            prefix = [_make_layer(i) for i in range(P)]
+            cell = [_make_layer(P + i) for i in range(C)]
+            suffix = [_make_layer(P + C + i) for i in range(S)]
+            self.middle = RecurrentMiddleBlock(prefix, cell, suffix)
+            # Keep `self.layers` empty for the uniform path; downstream MoE
+            # bookkeeping iterates over `self.iter_layers()` instead.
+            self.layers = nn.ModuleList()
+        else:
+            # Legacy uniform-layer path.
+            self.layers: List[DRAMBlock] = nn.ModuleList()
+            for i in range(cfg.n_layers):
+                layer_type = cfg.attention.layer_types[
+                    i % len(cfg.attention.layer_types)
+                ]
+                attn = make_attention(layer_type, cfg.attention, cfg.d_model)
+                ffn = make_ffn(cfg.moe, cfg.d_model)
+                inner = SPRLLayer(cfg.d_model, attn_module=attn, ffn_module=ffn)
+                block = TokenLevelDRAMBlock(
+                    d_model=cfg.d_model,
+                    attention_module=inner.attn,
+                    ffn_module=inner.ffn,
+                    use_depth_attention=cfg.dram.use_depth_attention,
+                )
+                block.norm1 = inner.norm_attn
+                block.norm2 = inner.norm_ffn
+                self.layers.append(block)
+            self.middle = None
 
         # ----- Bet C: RG flow -----------------------------------------
         if cfg.dram.rg_flow.enabled:
@@ -152,6 +188,26 @@ class SPRLv2(nn.Module):
             self.mtp = None
 
     # ------------------------------------------------------------------
+    def _iter_layers(self):
+        """Iterate over all backbone layer modules irrespective of layout.
+
+        For uniform layouts, yields each TokenLevelDRAMBlock. For middle-cell
+        layouts, yields prefix + cell + suffix layers (the cell layers are
+        yielded once even though they're applied K times — MoE accounting
+        is on params, not iterations).
+        """
+        if self.middle is not None:
+            for layer in self.middle.prefix:
+                yield layer
+            for layer in self.middle.cell:
+                yield layer
+            for layer in self.middle.suffix:
+                yield layer
+        else:
+            for layer in self.layers:
+                yield layer
+
+    # ------------------------------------------------------------------
     def forward_from_patches(
         self,
         patch_emb: Tensor,
@@ -172,51 +228,83 @@ class SPRLv2(nn.Module):
         log_det_Lambda = None
         if self.kalman is not None:
             kal = self.kalman(z)
-            # Use Kalman mean as a residual update.
             mu = self.kalman.mean(kal["eta"], kal["D"], kal["U"])
-            z = z + 0.1 * mu  # gentle gating; learned scalar in production
             log_det_Lambda = kal["log_det_Lambda"]
             diagnostics["log_det_Lambda_mean"] = float(log_det_Lambda.mean().item())
+            diagnostics["kalman_fusion_gate"] = float(
+                torch.sigmoid(self.kalman_fusion_gate).item()
+            )
+            # Gated residual fusion. In `diagnostic_probe` mode the gate is
+            # zeroed (Kalman output kept off the hidden stream).
+            if not self.kalman_diagnostic_only:
+                gate = torch.sigmoid(self.kalman_fusion_gate)
+                z = z + gate * mu
 
-        # Compute iteration plan (per-token K*).
+        # Compute iteration plan. Per-token soft K* from the router; for
+        # middle-cell layouts we aggregate to per-block (one K per batch elem).
         if isinstance(self.router, ActiveInferenceRouter):
             G = self.router.compute_G(z, log_det_Lambda)
         else:
             G = self.router.compute_G(z)
         k_per_token = self.router.k_star(G)  # [B, S], soft float (with STE)
-        diagnostics["mean_k"] = float(k_per_token.mean().item())
-        diagnostics["max_k"] = float(k_per_token.max().item())
 
-        # Per-token integer iteration counts driving the TokenLevelDRAMBlock.
-        # The router emits a soft (STE-rounded) float; clamp to [1, k_max] and
-        # floor/round to integer for the mask. A floor of 1 ensures every
-        # token gets at least one iteration.
-        k_int = (
-            k_per_token.detach()
-            .round()
-            .clamp(min=1.0, max=float(self.cfg.dram.k_max))
-            .long()
-        )
-        if n_iter_default is not None:
-            k_int = k_int.clamp(min=int(n_iter_default))
-
-        for layer in self.layers:
-            z, hist = layer.forward_token_level(
-                z,
-                k_per_token=k_int,
-                record_history=(self.rg_flow is not None),
-                max_iter_cap=self.cfg.dram.k_max,
+        if self.cfg.dram.routing_granularity == "per_block":
+            # Aggregate to one K per batch element. Mean is consistent with
+            # the spec's per-block routing (§4.5.6).
+            k_per_block_soft = k_per_token.float().mean(dim=-1)  # [B]
+            diagnostics["mean_k"] = float(k_per_block_soft.mean().item())
+            diagnostics["max_k"] = float(k_per_block_soft.max().item())
+            k_block_int = (
+                k_per_block_soft.detach()
+                .round()
+                .clamp(min=1.0, max=float(self.cfg.dram.k_max))
+                .long()
             )
-            if self.rg_flow is not None:
-                all_iters.extend(hist[1:])  # avoid double-counting the start
+            if n_iter_default is not None:
+                k_block_int = k_block_int.clamp(min=int(n_iter_default))
+        else:
+            k_block_int = None
+            diagnostics["mean_k"] = float(k_per_token.mean().item())
+            diagnostics["max_k"] = float(k_per_token.max().item())
+
+        if self.cell_type == "recurrent_middle_block":
+            assert k_block_int is not None, (
+                "recurrent_middle_block requires per_block routing"
+            )
+            z, iter_outs = self.middle(
+                z,
+                k_per_block=k_block_int,
+                return_iterations=(self.rg_flow is not None),
+            )
+            if self.rg_flow is not None and iter_outs:
+                all_iters.extend(iter_outs[1:])
+        else:
+            # Legacy uniform path: per-token K* through TokenLevelDRAMBlock.
+            k_int = (
+                k_per_token.detach()
+                .round()
+                .clamp(min=1.0, max=float(self.cfg.dram.k_max))
+                .long()
+            )
+            if n_iter_default is not None:
+                k_int = k_int.clamp(min=int(n_iter_default))
+            for layer in self.layers:
+                z, hist = layer.forward_token_level(
+                    z,
+                    k_per_token=k_int,
+                    record_history=(self.rg_flow is not None),
+                    max_iter_cap=self.cfg.dram.k_max,
+                )
+                if self.rg_flow is not None:
+                    all_iters.extend(hist[1:])
 
         if self.rg_flow is not None and len(all_iters) >= 2:
             aux_losses["rg_flow"] = self.rg_flow.loss(all_iters)
             diagnostics["T_b_norm"] = self.rg_flow.distance_from_identity()
 
-        # MoE auxiliary losses.
+        # MoE auxiliary losses (gather from every layer in either path).
         moe_aux = []
-        for layer in self.layers:
+        for layer in self._iter_layers():
             ffn = getattr(layer, "ffn", None)
             if hasattr(ffn, "aux_loss"):
                 a = ffn.aux_loss()

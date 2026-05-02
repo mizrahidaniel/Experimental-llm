@@ -36,11 +36,24 @@ def test_blt_plus_distill_disabled_ok():
 
 
 def test_no_blt_plus_teacher_token_kl_ok():
+    """No BLT + a realistic teacher-aligned vocab passes validation."""
     cfg = SPRLConfig()
     cfg.patcher.enabled = False
+    cfg.vocab_size = 128_000  # realistic teacher tokenizer (Llama-3.1)
     cfg.training.distill_enabled = True
     cfg.training.distill_mode = "teacher_token_kl"
     cfg.validate()
+
+
+def test_no_blt_with_byte_vocab_plus_teacher_token_kl_errors():
+    """v3.1: 256-vocab + teacher_token_kl is incoherent regardless of BLT."""
+    cfg = SPRLConfig()
+    cfg.patcher.enabled = False
+    cfg.vocab_size = 256
+    cfg.training.distill_enabled = True
+    cfg.training.distill_mode = "teacher_token_kl"
+    with pytest.raises(ValueError, match="vocab"):
+        cfg.validate()
 
 
 def test_active_selection_requires_distill():

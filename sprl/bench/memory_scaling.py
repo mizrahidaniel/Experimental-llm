@@ -172,45 +172,79 @@ def estimate_compute(
     seq_len_patches: int = 1024,
     mean_recurrent_iterations: Optional[float] = None,
 ) -> Dict[str, float]:
-    """Per-token compute accounting that respects recurrence.
+    """Per-token compute accounting (v3.1, 6N convention with overhead factor).
 
-    `effective_flops_per_token = active_params × mean_recurrent_iterations × 6`
-      (factor 6 = forward + backward).
+    `flops_per_token = 6 × active_params × architecture_overhead_factor`
+        (Chinchilla 6N: forward + backward).
 
-    `active_params` is the standard convention (per-token, no recurrence
-    multiplier) so it stays comparable with published baselines.
+    For middle-cell architectures, effective active per token is split:
+        effective_active = prefix_active + cell_active × mean_k + suffix_active
+
+    We approximate by counting MoE active vs inactive params and applying the
+    K-multiplier only to params that live in the recurrent cell (when the
+    middle-cell layout is in use). For uniform layers we treat the whole
+    backbone as recurrent.
     """
     cfg = model.cfg
     if mean_recurrent_iterations is None:
         mean_recurrent_iterations = float(cfg.dram.k_iterations_default)
 
-    # Approximate active params per recurrent step:
-    #   shared + active MoE expert params + attention + norms.
     n_total = sum(p.numel() for p in model.parameters())
     if cfg.moe.enabled:
-        # Each routed expert has ~3·d·expert_dim params (SwiGLU); only
-        # active_per_token of num_routed are touched per token.
         per_expert = 3 * cfg.d_model * cfg.moe.expert_dim
         moe_total = cfg.moe.num_routed_experts * per_expert * cfg.n_layers
         moe_active = cfg.moe.active_per_token * per_expert * cfg.n_layers
-        # Subtract inactive MoE params from total for active-per-token figure.
         active_params = n_total - (moe_total - moe_active)
     else:
         active_params = n_total
 
-    flops_per_token = 6 * active_params
-    if cfg.training.count_recurrence_in_active_flops:
-        effective = flops_per_token * mean_recurrent_iterations
+    flops_per_token_one_step = 6 * active_params
+
+    # Effective FLOPs/token.
+    middle_cell = cfg.dram.cell_type == "recurrent_middle_block"
+    if middle_cell:
+        prefix = max(cfg.dram.prefix_layers, 0)
+        cell = max(cfg.dram.recurrent_cell_layers, 0)
+        suffix = max(cfg.dram.suffix_layers, 0)
+        total_layer_eq = prefix + cell + suffix
+        # If specified shape is degenerate (e.g. zeros), fall back to uniform.
+        if total_layer_eq <= 0:
+            middle_cell = False
+
+    if middle_cell:
+        prefix = cfg.dram.prefix_layers
+        cell = cfg.dram.recurrent_cell_layers
+        suffix = cfg.dram.suffix_layers
+        # Approximate per-layer active by averaging.
+        per_layer_active = active_params / max(prefix + cell + suffix, 1)
+        prefix_active = prefix * per_layer_active
+        cell_active = cell * per_layer_active
+        suffix_active = suffix * per_layer_active
+        effective_active = prefix_active + cell_active * mean_recurrent_iterations + suffix_active
     else:
-        effective = flops_per_token
+        prefix_active = 0.0
+        cell_active = active_params
+        suffix_active = 0.0
+        if cfg.training.count_recurrence_in_active_flops:
+            effective_active = active_params * mean_recurrent_iterations
+        else:
+            effective_active = active_params
+
+    overhead = float(cfg.compute.architecture_overhead_factor)
+    effective_flops = 6 * effective_active * overhead
 
     return {
         "n_params_total": float(n_total),
         "active_params_per_token": float(active_params),
         "active_params_per_recurrent_step": float(active_params),
         "mean_recurrent_iterations": float(mean_recurrent_iterations),
-        "flops_per_token_one_step": float(flops_per_token),
-        "effective_flops_per_token": float(effective),
+        "flops_per_token_one_step": float(flops_per_token_one_step),
+        "effective_active_params_per_token": float(effective_active),
+        "effective_flops_per_token": float(effective_flops),
+        "architecture_overhead_factor": overhead,
+        "prefix_active_params": float(prefix_active),
+        "cell_active_params": float(cell_active),
+        "suffix_active_params": float(suffix_active),
         "tokens_per_seq": float(seq_len_patches),
     }
 

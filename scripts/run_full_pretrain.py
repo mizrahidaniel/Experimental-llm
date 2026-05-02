@@ -96,7 +96,7 @@ def phase_post_training(model, cfg, optim, log, n_steps: int, base_step: int = 0
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--variant", choices=["recommended", "original_bets_mini", "fallback_boring"], default=None,
+    p.add_argument("--variant", choices=["recommended", "recommended_plus_tropical_probe", "original_bets_mini", "fallback_boring"], default=None,
                    help="Variant shortcut (default: recommended).")
     p.add_argument("--config", default=None, help="Explicit config path (overrides --variant).")
     p.add_argument("--steps_per_phase", type=int, default=10)

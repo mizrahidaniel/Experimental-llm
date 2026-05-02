@@ -31,7 +31,7 @@ def make_synthetic_batch(cfg: SPRLConfig, batch_size: int = 2, n_patches: int = 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--variant", choices=["recommended", "original_bets_mini", "fallback_boring"], default=None,
+    p.add_argument("--variant", choices=["recommended", "recommended_plus_tropical_probe", "original_bets_mini", "fallback_boring"], default=None,
                    help="Variant shortcut (default: recommended).")
     p.add_argument("--config", type=str, default=None,
                    help="Explicit config path (overrides --variant).")

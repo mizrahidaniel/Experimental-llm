@@ -12,12 +12,15 @@ from typing import Optional
 
 VARIANT_PILOT = {
     "recommended": "configs/recommended_100m_pilot.yaml",
+    "recommended_plus_tropical_probe": "configs/recommended_plus_tropical_probe_pilot.yaml",
     "original_bets_mini": "configs/original_bets_mini_100m_pilot.yaml",
     "fallback_boring": "configs/fallback_boring.yaml",
 }
 
 VARIANT_FULL = {
-    "recommended": "configs/recommended_500m_full.yaml",
+    "recommended": "configs/recommended_300m_full.yaml",
+    # No full-run config for the tropical probe variant — by design, run only
+    # the pilot to decide whether to fold tropical into the next iteration.
     "original_bets_mini": "configs/original_bets_mini_300m_full.yaml",
     "fallback_boring": "configs/fallback_boring.yaml",
 }

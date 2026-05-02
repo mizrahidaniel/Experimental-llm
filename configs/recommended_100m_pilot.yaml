@@ -1,58 +1,65 @@
-# Recommended pilot @ ~100M-active params.
+# SPRL-v3.1 recommended pilot @ ~100M-active params, 1B tokens, ~4h on 5080 BF16.
 #
-# Practical default: stable training, fewer interacting mechanisms, KalmanMemory
-# as a passive probe (router falls back to entropy-based until kill exp A passes),
-# tropical OFF, RG-flow OFF (diagnostic via T_b_norm log only).
-#
-# Default training mode: local CE only (no teacher). Flip
-# `training.distill_enabled: true` and set `distill_mode: sequence_level` (or
-# wire an aux byte-vocab teacher head) to enable distillation; direct
-# `teacher_token_kl` is not allowed with BLT (validation will error).
+# Architecture: prefix(2) + tied-cell(4)·K + suffix(2). Per-block K* routing.
+# Kalman in passive_probe with gated residual fusion. Tropical OFF, RG-loss OFF.
+# Distillation OFF by default (validation requires teacher_token_kl + matched
+# tokenizer; flip to true with a teacher-aligned vocab to enable).
+
+variant: recommended
 
 d_model: 768
-n_layers: 12
-vocab_size: 256
+n_layers: 8                   # 2 prefix + 4 cell + 2 suffix (effective)
+vocab_size: 256               # BLT byte-level for the pilot; keeps distill OFF
 max_seq_len_patches: 2048
 
 patcher:
-  enabled: true                  # BLT byte-level
+  enabled: true
   byte_lm_layers: 2
-  byte_lm_dim: 256
+  byte_lm_dim: 192
   entropy_threshold: 1.5
   max_patch_bytes: 16
   byte_encoder_layers: 2
-  byte_encoder_dim: 384
+  byte_encoder_dim: 256
   patch_dim: 768
 
 attention:
   pattern: alternating
   layer_types: [dsa_mla, sliding_window]
   mla:
-    d_c_latent: 384
+    d_c_latent: 192
     d_qhead: 64
     d_rope_decoupled: 16
     n_heads: 12
-  dsa: {enabled: true, indexer_type: hierarchical_hisa, top_k_blocks: 8, top_k_tokens_per_block: 64, block_size: 128, dense_until_seqlen: 1024}
+  dsa: {enabled: true, indexer_type: hierarchical_hisa, top_k_blocks: 4, top_k_tokens_per_block: 64, block_size: 128, dense_until_seqlen: 2048}
   sliding: {window_size: 1024}
-  tropical: {enabled: false}     # OFF in recommended
+  tropical: {enabled: false}             # OFF in recommended
 
 dram:
   enabled: true
-  k_iterations_default: 2        # target_mean_k=2
+  cell_type: recurrent_middle_block      # v3.1 mandate
+  prefix_layers: 2
+  recurrent_cell_layers: 4
+  suffix_layers: 2
+  routing_granularity: per_block         # v3.1 mandate
+  k_iterations_default: 2                # target_mean_k
   k_max: 4
-  use_depth_attention: true
-  rg_flow:
-    enabled: false               # diagnostic only via T_b_norm; loss off
+  use_depth_attention: false             # depth-attn isn't compatible with the tied cell yet
+  rg_flow: {enabled: false}              # diagnostic via T_b_norm log only
   router:
-    enabled: false               # passive Kalman: router stays entropy-based
+    enabled: true                         # AIR drives K* per block
     k_max: 4
     k_target: 2
+    training_mode: straight_through_soft_k
+    source: scout_head_only               # passive Kalman; no authority
 
 kalman:
-  enabled: true                  # passive probe: state computed, log_det logged,
-  rank: 8                         # but does NOT control the router until kill
-  eps_diag: 1.0e-4                # criterion A passes at 100M scale.
+  enabled: true
+  rank: 8
+  eps_diag: 1.0e-4
   chunk_size: 128
+  mode: passive_probe                     # state computed; gated residual fusion
+  fusion_gate_init: -3.0                  # sigmoid(-3) ≈ 0.05; tiny initial influence
+  can_control_router: false
 
 moe:
   enabled: true
@@ -65,7 +72,16 @@ moe:
 
 mtp: {enabled: true, depth: 2, loss_weight: 0.3}
 
-precision: {forward_default: bf16, backward_default: bf16, master_weight_dtype: bf16}
+precision:
+  forward_default: bf16
+  backward_default: bf16
+  master_weight_dtype: bf16
+  optimizer_type: adamw
+
+compute:
+  flop_convention: 6N_per_token
+  architecture_overhead_factor: 1.3
+  count_recurrence_in_active_params: true
 
 training:
   seed: 1234
@@ -75,9 +91,15 @@ training:
   warmup_steps: 1000
   total_steps: 30000
   grad_clip: 1.0
-  count_recurrence_in_active_flops: true   # honest accounting under recurrence
-  distill_enabled: false                   # local training only by default
-  distill_mode: teacher_token_kl           # ignored when distill_enabled=false
+  count_recurrence_in_active_flops: true
+  distill_enabled: false
+  distill_mode: teacher_token_kl
+  distill_kl_direction: teacher_forward_kl
+  distill_teacher_base: llama_3_1_8b
+  distill_teacher_instruct: llama_3_1_8b_instruct
+  distill_store_indices: true
+  distill_store_logits: true
+  distill_store_teacher_logsumexp: true
   active_selection_enabled: false
   iterative_redistill_enabled: false
   nca_pretrain_enabled: true
