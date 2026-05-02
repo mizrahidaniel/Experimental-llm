@@ -28,7 +28,12 @@ from torch import Tensor, nn
 
 from sprl.blocks import SPRLLayer, make_attention, make_ffn
 from sprl.config import SPRLConfig
-from sprl.heads import ByteLMHead, MultiTokenPredictionHead
+from sprl.heads import (
+    AuxiliaryTeacherTokenHead,
+    ByteLMHead,
+    LMHead,
+    MultiTokenPredictionHead,
+)
 from sprl.memory import KalmanInfoMemory
 from sprl.patcher import ByteEncoder, ByteLM, EntropyPatcher
 from sprl.recurrent import (
@@ -43,19 +48,33 @@ from sprl.recurrent import (
 
 @dataclass
 class SPRLOutput:
-    byte_logits: Tensor  # [N_patches, n_bytes_per_patch, vocab]
+    """Forward output. The shape of `byte_logits` depends on tokenizer.type:
+
+      tokenizer.type=blt:  [B, S_patches, max_patch_bytes, vocab]
+      tokenizer.type=bpe:  [B, S_tokens, vocab]
+
+    `aux_logits` is non-None only when distill_mode=auxiliary_teacher_token_head;
+    it lives in the *teacher's* vocab space.
+    """
+
+    byte_logits: Tensor
     mtp_logits: Optional[List[Tensor]]
     aux_losses: dict
     diagnostics: dict
+    aux_logits: Optional[Tensor] = None
 
 
 class SPRLv2(nn.Module):
     def __init__(self, cfg: SPRLConfig):
         super().__init__()
         self.cfg = cfg
+        self.tokenizer_type = cfg.tokenizer.type
 
-        # ----- patcher (encoder side) ---------------------------------
+        # ----- input + output heads (tokenizer-dependent) -------------
         if cfg.patcher.enabled:
+            # BLT byte-level path. byte_lm is the frozen entropy oracle, the
+            # patcher chunks the byte stream by entropy, and byte_encoder
+            # produces a per-patch latent.
             self.byte_lm = ByteLM(
                 dim=cfg.patcher.byte_lm_dim, n_layers=cfg.patcher.byte_lm_layers
             )
@@ -75,6 +94,12 @@ class SPRLv2(nn.Module):
             self.byte_lm = None
             self.patcher = None
             self.byte_encoder = None
+
+        # BPE path: input embedding (used by `forward_from_token_ids`).
+        if self.tokenizer_type == "bpe":
+            self.token_embed = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        else:
+            self.token_embed = None
 
         # ----- Bet A: Kalman info memory ------------------------------
         if cfg.kalman.enabled:
@@ -169,13 +194,41 @@ class SPRLv2(nn.Module):
             self.rg_flow = None
 
         # ----- output head --------------------------------------------
-        self.byte_lm_head = ByteLMHead(
-            d_model=cfg.d_model,
-            byte_dim=cfg.patcher.byte_encoder_dim,
-            n_layers=2,
-            max_patch_bytes=cfg.patcher.max_patch_bytes,
-            vocab=cfg.vocab_size,
-        )
+        if self.tokenizer_type == "bpe":
+            tied = self.token_embed if cfg.tokenizer.weight_tied else None
+            self.lm_head = LMHead(
+                d_model=cfg.d_model,
+                vocab_size=cfg.vocab_size,
+                tied_embedding=tied,
+            )
+            self.byte_lm_head = None
+        else:
+            self.byte_lm_head = ByteLMHead(
+                d_model=cfg.d_model,
+                byte_dim=cfg.patcher.byte_encoder_dim,
+                n_layers=2,
+                max_patch_bytes=cfg.patcher.max_patch_bytes,
+                vocab=cfg.vocab_size,
+            )
+            self.lm_head = None
+
+        # ----- auxiliary teacher-token head (distillation across mismatched vocabs) ----
+        if (
+            cfg.training.distill_enabled
+            and cfg.training.distill_mode == "auxiliary_teacher_token_head"
+        ):
+            from sprl.tokenizer import vocab_size_for
+
+            try:
+                teacher_vocab = vocab_size_for(cfg.training.distill_teacher_base)
+            except ValueError:
+                teacher_vocab = cfg.vocab_size  # caller will error in compute_total_loss
+            self.aux_teacher_head = AuxiliaryTeacherTokenHead(
+                d_model=cfg.d_model,
+                teacher_vocab_size=teacher_vocab,
+            )
+        else:
+            self.aux_teacher_head = None
 
         # ----- MTP head ----------------------------------------------
         if cfg.mtp.enabled:
@@ -208,18 +261,15 @@ class SPRLv2(nn.Module):
                 yield layer
 
     # ------------------------------------------------------------------
-    def forward_from_patches(
+    def _run_backbone(
         self,
-        patch_emb: Tensor,
-        future_targets: Optional[Tensor] = None,
+        z: Tensor,
         n_iter_default: int = 1,
-    ) -> SPRLOutput:
-        """Skip patcher; useful for unit tests and when you have pre-computed embeddings.
+    ) -> tuple[Tensor, dict, dict]:
+        """Shared trunk: Kalman fusion + router + recurrence + MoE bookkeeping.
 
-        patch_emb: [B, S_patches, d_model]
-        future_targets: [B, S_patches, depth] for MTP loss (optional).
+        Returns (z_post_backbone, diagnostics, aux_losses).
         """
-        z = patch_emb
         diagnostics: dict = {}
         aux_losses: dict = {}
         all_iters: list[Tensor] = [z]
@@ -234,8 +284,6 @@ class SPRLv2(nn.Module):
             diagnostics["kalman_fusion_gate"] = float(
                 torch.sigmoid(self.kalman_fusion_gate).item()
             )
-            # Gated residual fusion. In `diagnostic_probe` mode the gate is
-            # zeroed (Kalman output kept off the hidden stream).
             if not self.kalman_diagnostic_only:
                 gate = torch.sigmoid(self.kalman_fusion_gate)
                 z = z + gate * mu
@@ -317,8 +365,28 @@ class SPRLv2(nn.Module):
         if isinstance(self.router, ActiveInferenceRouter):
             aux_losses["compute_budget"] = self.router.compute_budget_loss(k_per_token.float())
 
-        # Output: per-patch byte logits.
-        # Treat each patch position as its own item for the head (no cross-patch context).
+        return z, diagnostics, aux_losses
+
+    # ------------------------------------------------------------------
+    def forward_from_patches(
+        self,
+        patch_emb: Tensor,
+        future_targets: Optional[Tensor] = None,
+        n_iter_default: int = 1,
+    ) -> SPRLOutput:
+        """BLT (byte-level) entry point: per-patch latents → per-byte logits.
+
+        patch_emb:      [B, S_patches, d_model]
+        future_targets: [B, S_patches, depth] for MTP loss (optional).
+        Returns SPRLOutput.byte_logits of shape
+            [B, S_patches, max_patch_bytes, vocab_size].
+        """
+        if self.tokenizer_type != "blt":
+            raise RuntimeError(
+                "forward_from_patches is the BLT entry point; this model uses "
+                f"tokenizer.type={self.tokenizer_type!r}. Use forward_from_token_ids."
+            )
+        z, diagnostics, aux_losses = self._run_backbone(patch_emb, n_iter_default)
         B, S, d = z.shape
         z_flat = z.reshape(B * S, d)
         byte_logits = self.byte_lm_head(
@@ -330,11 +398,50 @@ class SPRLv2(nn.Module):
         if self.mtp is not None and future_targets is not None:
             mtp_logits = self.mtp(z, future_targets)
 
+        aux_logits = self.aux_teacher_head(z) if self.aux_teacher_head is not None else None
+
         return SPRLOutput(
             byte_logits=byte_logits,
             mtp_logits=mtp_logits,
             aux_losses=aux_losses,
             diagnostics=diagnostics,
+            aux_logits=aux_logits,
+        )
+
+    # ------------------------------------------------------------------
+    def forward_from_token_ids(
+        self,
+        token_ids: Tensor,
+        future_targets: Optional[Tensor] = None,
+        n_iter_default: int = 1,
+    ) -> SPRLOutput:
+        """BPE entry point: token IDs → per-token logits over the BPE vocab.
+
+        token_ids:      [B, S] long.
+        future_targets: [B, S, depth] for MTP loss (optional).
+        Returns SPRLOutput.byte_logits of shape [B, S, vocab_size].
+        """
+        if self.tokenizer_type != "bpe":
+            raise RuntimeError(
+                "forward_from_token_ids is the BPE entry point; this model uses "
+                f"tokenizer.type={self.tokenizer_type!r}. Use forward_from_patches."
+            )
+        z = self.token_embed(token_ids)  # [B, S, d_model]
+        z, diagnostics, aux_losses = self._run_backbone(z, n_iter_default)
+        token_logits = self.lm_head(z)  # [B, S, vocab_size]
+
+        mtp_logits = None
+        if self.mtp is not None and future_targets is not None:
+            mtp_logits = self.mtp(z, future_targets)
+
+        aux_logits = self.aux_teacher_head(z) if self.aux_teacher_head is not None else None
+
+        return SPRLOutput(
+            byte_logits=token_logits,  # field name is legacy; shape is [B, S, V] here
+            mtp_logits=mtp_logits,
+            aux_losses=aux_losses,
+            diagnostics=diagnostics,
+            aux_logits=aux_logits,
         )
 
     # ------------------------------------------------------------------

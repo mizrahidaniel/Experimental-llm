@@ -1,26 +1,29 @@
 # SPRL-v3.1 recommended pilot @ ~100M-active params, 1B tokens, ~4h on 5080 BF16.
 #
+# v3.1 BPE path: teacher-aligned tokenizer (default `tiny_bpe`, 32K vocab) so
+# direct teacher_token_kl distillation is coherent. For real runs, point
+# `tokenizer.source` at `llama_3_1_8b` or `qwen_2_5_7b` and set
+# `vocab_size` to match (128_000 or 152_064). The MiniBPE fallback shipped
+# under the hood lets unit tests run on CPU with no network.
+#
 # Architecture: prefix(2) + tied-cell(4)·K + suffix(2). Per-block K* routing.
 # Kalman in passive_probe with gated residual fusion. Tropical OFF, RG-loss OFF.
-# Distillation OFF by default (validation requires teacher_token_kl + matched
-# tokenizer; flip to true with a teacher-aligned vocab to enable).
 
 variant: recommended
 
 d_model: 768
 n_layers: 8                   # 2 prefix + 4 cell + 2 suffix (effective)
-vocab_size: 256               # BLT byte-level for the pilot; keeps distill OFF
+vocab_size: 32000             # matches tokenizer.source=tiny_bpe
 max_seq_len_patches: 2048
 
+tokenizer:
+  type: bpe
+  source: tiny_bpe            # CPU-OK fallback; switch to llama_3_1_8b for real runs
+  allow_network: true
+  weight_tied: true
+
 patcher:
-  enabled: true
-  byte_lm_layers: 2
-  byte_lm_dim: 192
-  entropy_threshold: 1.5
-  max_patch_bytes: 16
-  byte_encoder_layers: 2
-  byte_encoder_dim: 256
-  patch_dim: 768
+  enabled: false              # BPE path; no entropy patching
 
 attention:
   pattern: alternating
@@ -32,33 +35,33 @@ attention:
     n_heads: 12
   dsa: {enabled: true, indexer_type: hierarchical_hisa, top_k_blocks: 4, top_k_tokens_per_block: 64, block_size: 128, dense_until_seqlen: 2048}
   sliding: {window_size: 1024}
-  tropical: {enabled: false}             # OFF in recommended
+  tropical: {enabled: false}
 
 dram:
   enabled: true
-  cell_type: recurrent_middle_block      # v3.1 mandate
+  cell_type: recurrent_middle_block
   prefix_layers: 2
   recurrent_cell_layers: 4
   suffix_layers: 2
-  routing_granularity: per_block         # v3.1 mandate
-  k_iterations_default: 2                # target_mean_k
+  routing_granularity: per_block
+  k_iterations_default: 2
   k_max: 4
-  use_depth_attention: false             # depth-attn isn't compatible with the tied cell yet
-  rg_flow: {enabled: false}              # diagnostic via T_b_norm log only
+  use_depth_attention: false
+  rg_flow: {enabled: false}
   router:
-    enabled: true                         # AIR drives K* per block
+    enabled: true
     k_max: 4
     k_target: 2
     training_mode: straight_through_soft_k
-    source: scout_head_only               # passive Kalman; no authority
+    source: scout_head_only
 
 kalman:
   enabled: true
   rank: 8
   eps_diag: 1.0e-4
   chunk_size: 128
-  mode: passive_probe                     # state computed; gated residual fusion
-  fusion_gate_init: -3.0                  # sigmoid(-3) ≈ 0.05; tiny initial influence
+  mode: passive_probe
+  fusion_gate_init: -3.0
   can_control_router: false
 
 moe:
@@ -95,11 +98,11 @@ training:
   distill_enabled: false
   distill_mode: teacher_token_kl
   distill_kl_direction: teacher_forward_kl
-  distill_teacher_base: llama_3_1_8b
-  distill_teacher_instruct: llama_3_1_8b_instruct
+  distill_teacher_base: tiny_bpe
+  distill_teacher_instruct: tiny_bpe
   distill_store_indices: true
   distill_store_logits: true
   distill_store_teacher_logsumexp: true
   active_selection_enabled: false
   iterative_redistill_enabled: false
-  nca_pretrain_enabled: true
+  nca_pretrain_enabled: false   # NCA tokens incompatible with teacher BPE; off by default

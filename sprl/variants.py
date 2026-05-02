@@ -56,9 +56,15 @@ def resolve_variant_config(
 def print_variant_banner(cfg, variant: Optional[str] = None) -> None:
     """One-line per active mechanism — printed at startup so misconfigured runs
     are obvious from the first line of stdout."""
+    if cfg.tokenizer.type == "bpe":
+        tok_label = f"tokenizer=BPE({cfg.tokenizer.source})"
+    elif cfg.patcher.enabled:
+        tok_label = "tokenizer=BLT"
+    else:
+        tok_label = "tokenizer=raw"
     parts = [
         f"variant={variant or 'recommended'}",
-        "tokenizer=BLT" if cfg.patcher.enabled else "tokenizer=raw",
+        tok_label,
         f"d_model={cfg.d_model}",
         f"n_layers={cfg.n_layers}",
         f"kalman={'on' if cfg.kalman.enabled else 'off'}",

@@ -26,7 +26,7 @@ Practical version optimized for stable training. Defaults:
 
 | Mechanism | Default |
 |---|---|
-| Tokenizer | BLT byte-level entropy patcher |
+| Tokenizer | **BPE**, teacher-aligned (default `tiny_bpe` for offline tests; flip `tokenizer.source` to `llama_3_1_8b` or `qwen_2_5_7b` for real runs); weight-tied embed/LM-head |
 | DSA-MLA + sliding-window alternating | on |
 | Fine-grained MoE + ALF balancing | on |
 | MTP head | on |
@@ -36,7 +36,7 @@ Practical version optimized for stable training. Defaults:
 | Kalman info-form memory | **passive_probe** mode with gated residual fusion `h += sigmoid(fusion_gate)·kalman_out`, `fusion_gate_init = -3.0` (sigmoid ≈ 0.05) — does NOT control the router |
 | Tropical attention heads | **off** |
 | RG-flow regularizer | **off** (diagnostic via `T_b_norm` log only) |
-| Distillation | **off** by default; opt-in. Under BLT, must use `auxiliary_teacher_token_head` (256-byte vocab can't be aligned with a 128K teacher BPE). |
+| Distillation | **off** by default; opt-in. Direct `teacher_token_kl` is now coherent because student/teacher share a tokenizer. |
 | Active selection (Bet C) | off (requires `distill_enabled=true`) |
 | Iterative re-distillation | off |
 | FLOP convention | `6N_per_token` × `architecture_overhead_factor` (default 1.3) |

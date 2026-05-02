@@ -1,26 +1,29 @@
 # SPRL-v3.1 recommended full pretrain @ ~250-350M effective active params.
 #
+# v3.1 BPE path: teacher-aligned tokenizer. Default points at `llama_3_1_8b`
+# (128K vocab); the loader gracefully falls back to MiniBPE-128K if the HF
+# checkpoint is unavailable, so configs validate everywhere. Real distillation
+# runs require the actual teacher download.
+#
 # Honest target tier: ~30B tokens / ≤ 1 week on 5080 BF16 (110 TFLOPS sustained,
-# 6N × 1.3 overhead). FP8 stretch tier (50B tokens) requires kernel maturity;
-# NVFP4 (100B) is aspirational.
+# 6N × 1.3 overhead). FP8 stretch tier (~50B tokens) requires kernel maturity;
+# NVFP4 (~100B) is aspirational.
 
 variant: recommended
 
 d_model: 768
 n_layers: 8                   # 2 prefix + 4 cell + 2 suffix
-vocab_size: 256               # BLT default; switch to teacher tokenizer + larger vocab
-                              # to enable teacher_token_kl distillation.
+vocab_size: 128000            # matches Llama-3.1 BPE
 max_seq_len_patches: 8192
 
+tokenizer:
+  type: bpe
+  source: llama_3_1_8b
+  allow_network: true
+  weight_tied: true            # tied embed/LM-head saves ~98M params at 128K vocab
+
 patcher:
-  enabled: true
-  byte_lm_layers: 2
-  byte_lm_dim: 256
-  entropy_threshold: 1.5
-  max_patch_bytes: 16
-  byte_encoder_layers: 4
-  byte_encoder_dim: 384
-  patch_dim: 768
+  enabled: false
 
 attention:
   pattern: alternating
@@ -41,8 +44,8 @@ dram:
   recurrent_cell_layers: 4
   suffix_layers: 2
   routing_granularity: per_block
-  k_iterations_default: 2          # fallback target_mean_k; promote to 3 if budget allows
-  k_max: 4                          # fallback; promote to 6 if budget allows
+  k_iterations_default: 2
+  k_max: 4
   use_depth_attention: false
   rg_flow: {enabled: false}
   router:
@@ -59,7 +62,7 @@ kalman:
   chunk_size: 256
   mode: passive_probe_then_active_if_passes
   fusion_gate_init: -3.0
-  can_control_router: false        # promote after Bet A kill passes
+  can_control_router: false
 
 moe:
   enabled: true
@@ -94,10 +97,10 @@ training:
   lr: 3.0e-3
   weight_decay: 0.1
   warmup_steps: 2000
-  total_steps: 60000             # ~30B tokens at batch 16, seq 1024
+  total_steps: 60000             # ~1B patches starter; tune from μP search
   grad_clip: 1.0
   count_recurrence_in_active_flops: true
-  distill_enabled: false
+  distill_enabled: false          # opt-in; vocab-aligned so teacher_token_kl works directly
   distill_mode: teacher_token_kl
   distill_kl_direction: teacher_forward_kl
   distill_teacher_base: llama_3_1_8b
@@ -107,6 +110,6 @@ training:
   distill_store_teacher_logsumexp: true
   active_selection_enabled: false
   iterative_redistill_enabled: false
-  nca_pretrain_enabled: true
+  nca_pretrain_enabled: false
   curriculum_enabled: true
   curriculum_freeze_until_tokens: 5_000_000_000

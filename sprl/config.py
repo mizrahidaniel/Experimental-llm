@@ -20,6 +20,26 @@ import yaml
 
 
 @dataclass
+class TokenizerConfig:
+    """v3.1 tokenizer selector.
+
+    type:
+      - "blt"  (legacy): byte-level entropy patcher; vocab_size=256.
+      - "bpe"  (v3.1):   teacher-aligned BPE; vocab from `source` (Llama-3.1
+                          → 128K, Qwen-2.5 → 152K, tiny_bpe → 32K offline).
+
+    For `recommended` variant (v3.1) `type` MUST be "bpe" so direct
+    teacher-token KL distillation is coherent. For `original_bets_mini` the
+    default is "blt" + auxiliary_teacher_token_head.
+    """
+
+    type: str = "blt"  # "blt" | "bpe"
+    source: str = "tiny_bpe"  # only used when type=="bpe"; matches teacher when distilling
+    allow_network: bool = True  # set False in tests / sandboxes
+    weight_tied: bool = True  # tie input embedding ↔ LM head (saves ~98M @ 128K vocab)
+
+
+@dataclass
 class PatcherConfig:
     enabled: bool = True
     byte_lm_layers: int = 2
@@ -314,6 +334,7 @@ class SPRLConfig:
     max_seq_len_patches: int = 8192
 
     # Sub-configs
+    tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     patcher: PatcherConfig = field(default_factory=PatcherConfig)
     attention: AttentionConfig = field(default_factory=AttentionConfig)
     dram: DRAMConfig = field(default_factory=DRAMConfig)
@@ -490,6 +511,32 @@ class SPRLConfig:
                 raise ValueError(
                     "teacher_token_kl with truncated top-K requires "
                     "distill_store_teacher_logsumexp=true for normalized KL."
+                )
+
+        # (12b) v3.1 recommended variant requires BPE tokenizer (alignment with teacher).
+        if self.variant == "recommended" and self.tokenizer.type != "bpe":
+            raise ValueError(
+                "variant=recommended mandates tokenizer.type=bpe (teacher-aligned vocab); "
+                f"got {self.tokenizer.type!r}. Use original_bets_mini for the BLT path."
+            )
+
+        # (12c) BPE tokenizer.type ⇒ vocab_size must match tokenizer's, and patcher off.
+        if self.tokenizer.type == "bpe":
+            from sprl.tokenizer import vocab_size_for
+
+            try:
+                want = vocab_size_for(self.tokenizer.source)
+            except ValueError:
+                want = None
+            if want is not None and self.vocab_size != want:
+                raise ValueError(
+                    f"tokenizer.type=bpe with source={self.tokenizer.source!r} requires "
+                    f"vocab_size={want}; got vocab_size={self.vocab_size}."
+                )
+            if self.patcher.enabled:
+                raise ValueError(
+                    "tokenizer.type=bpe is incompatible with patcher.enabled=true. "
+                    "Disable BLT (patcher.enabled=false) when using BPE."
                 )
 
         # (13) Tokenizer alignment for direct teacher-token KL.

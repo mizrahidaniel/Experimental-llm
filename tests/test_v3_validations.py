@@ -15,6 +15,11 @@ def _v3_config_skeleton(variant: str = "recommended") -> SPRLConfig:
     cfg.dram.routing_granularity = "per_block"
     cfg.kalman.enabled = True
     cfg.kalman.fusion_gate_init = -3.0
+    if variant in ("recommended", "recommended_plus_tropical_probe"):
+        cfg.tokenizer.type = "bpe"
+        cfg.tokenizer.source = "tiny_bpe"
+        cfg.vocab_size = 32_000
+        cfg.patcher.enabled = False
     return cfg
 
 

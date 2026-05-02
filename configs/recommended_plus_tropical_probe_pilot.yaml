@@ -1,26 +1,22 @@
 # SPRL-v3.1 recommended + tropical probe @ 100M-active.
 #
 # Identical to recommended_100m_pilot.yaml EXCEPT one tropical head is added.
-# Used to test whether tropical attention helps without polluting the default
-# recommended path. Pass criterion: improves synthetic DP/state-tracking tasks
-# AND does not regress LM val loss by > 1.0% vs recommended_100m_pilot.
 
 variant: recommended_plus_tropical_probe
 
 d_model: 768
 n_layers: 8
-vocab_size: 256
+vocab_size: 32000
 max_seq_len_patches: 2048
 
+tokenizer:
+  type: bpe
+  source: tiny_bpe
+  allow_network: true
+  weight_tied: true
+
 patcher:
-  enabled: true
-  byte_lm_layers: 2
-  byte_lm_dim: 192
-  entropy_threshold: 1.5
-  max_patch_bytes: 16
-  byte_encoder_layers: 2
-  byte_encoder_dim: 256
-  patch_dim: 768
+  enabled: false
 
 attention:
   pattern: alternating
@@ -33,7 +29,7 @@ attention:
   dsa: {enabled: true, indexer_type: hierarchical_hisa, top_k_blocks: 4, top_k_tokens_per_block: 64, block_size: 128, dense_until_seqlen: 2048}
   sliding: {window_size: 1024}
   tropical:
-    enabled: true                          # <-- 1 head, ~8% of total
+    enabled: true                          # 1 head, ~8% of total
     fraction_of_heads: 0.0834              # ⌈12·0.0834⌉ = 1 tropical head
     num_tropical_heads_total: 1
     affects_training: true
@@ -97,7 +93,9 @@ training:
   distill_enabled: false
   distill_mode: teacher_token_kl
   distill_kl_direction: teacher_forward_kl
+  distill_teacher_base: tiny_bpe
+  distill_teacher_instruct: tiny_bpe
   distill_store_indices: true
   distill_store_logits: true
   distill_store_teacher_logsumexp: true
-  nca_pretrain_enabled: true
+  nca_pretrain_enabled: false

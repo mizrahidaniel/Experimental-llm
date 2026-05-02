@@ -31,6 +31,14 @@ identical tokenizer**. SPRL-v3.1 enforces this in `SPRLConfig.validate()`.
 predicts in the teacher's vocab. Its KL receives gradients into the trunk;
 the main LM head still trains on student-vocab CE.
 
+**v3.1 wiring**: `SPRLv2.__init__` instantiates the aux head automatically
+when `cfg.training.distill_enabled and cfg.training.distill_mode ==
+"auxiliary_teacher_token_head"`. The `forward_from_*` methods then attach
+`out.aux_logits`, and `compute_total_loss` automatically routes the KL
+against `out.aux_logits` (in teacher vocab) instead of against the main LM
+head's logits. The aux head's `teacher_vocab_size` is looked up from
+`sprl.tokenizer.vocab_size_for(cfg.training.distill_teacher_base)`.
+
 ```python
 from sprl.heads import AuxiliaryTeacherTokenHead
 
