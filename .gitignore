@@ -37,3 +37,4 @@ logs/
 data/cache/
 data/raw/
 data/processed/
+.claude/
