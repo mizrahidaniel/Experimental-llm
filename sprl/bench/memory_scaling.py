@@ -77,6 +77,144 @@ def _measure_one(
     return metrics
 
 
+def estimate_memory_breakdown(
+    model: SPRLv2,
+    batch: int = 16,
+    seq_len_patches: int = 1024,
+    bytes_per_param: int = 2,  # BF16 default
+    include_optimizer: bool = True,
+    include_teacher_logits: bool = False,
+    teacher_topk: int = 32,
+) -> Dict[str, float]:
+    """Static memory estimate broken down by component, in GB.
+
+    Estimator (no allocation; can be called before training begins):
+      - weights:     N_params × bytes_per_param
+      - gradients:   N_params × bytes_per_param  (BF16 grad)
+      - optimizer:   N_params × 2  (8-bit AdamW with state-pair) — set 0 if disabled
+      - activations: 4 × batch × seq × d_model × n_layers × bytes_per_param
+                     (gradient checkpointing every 2 layers ⇒ ÷2)
+      - kv_cache:    batch × seq × n_heads × (d_qhead + d_rope) × 2 × n_dsa_layers
+      - kalman_state: batch × seq × d_model × (1 + rank) × n_layers (if Bet A on)
+      - teacher_logits: batch × seq × max_patch_bytes × teacher_topk × 6 bytes
+                        (int32 idx + fp16 logp), if distillation on
+    """
+    cfg = model.cfg
+    n_params = sum(p.numel() for p in model.parameters())
+    weights_gb = n_params * bytes_per_param / 1024 ** 3
+    gradients_gb = weights_gb
+    # 8-bit AdamW + GaLore on MoE has roughly 2 bytes/param of state.
+    optimizer_gb = (n_params * 2 / 1024 ** 3) if include_optimizer else 0.0
+
+    # Activations (with gradient checkpointing every 2 layers).
+    act_per_layer = 4 * batch * seq_len_patches * cfg.d_model * bytes_per_param
+    activations_gb = act_per_layer * cfg.n_layers / 2 / 1024 ** 3
+
+    # KV cache for the MLA latent + decoupled rotary.
+    head_dim = cfg.attention.mla.d_qhead + cfg.attention.mla.d_rope_decoupled
+    n_dsa = sum(1 for t in cfg.attention.layer_types if t == "dsa_mla") * (
+        cfg.n_layers // max(len(cfg.attention.layer_types), 1)
+    )
+    kv_gb = (
+        batch * seq_len_patches * cfg.attention.mla.n_heads * head_dim * 2 * n_dsa
+        * bytes_per_param / 1024 ** 3
+    )
+
+    # Kalman state: (η, D, U) per token per layer.
+    kalman_gb = 0.0
+    if cfg.kalman.enabled:
+        per_token = cfg.d_model * (2 + cfg.kalman.rank)  # η + D + U cols
+        kalman_gb = (
+            batch * seq_len_patches * per_token * cfg.n_layers
+            * bytes_per_param / 1024 ** 3
+        )
+
+    # MoE dispatch buffers (rough): batch × seq × active_per_token × expert_dim.
+    moe_gb = 0.0
+    if cfg.moe.enabled:
+        moe_gb = (
+            batch * seq_len_patches * cfg.moe.active_per_token * cfg.moe.expert_dim
+            * bytes_per_param * 2 / 1024 ** 3   # ×2 for in+out
+        )
+
+    # Teacher logits (offline distillation batch buffer).
+    teacher_gb = 0.0
+    if include_teacher_logits:
+        teacher_gb = (
+            batch * seq_len_patches * cfg.patcher.max_patch_bytes
+            * teacher_topk * 6 / 1024 ** 3
+        )
+
+    workspace_gb = 1.0  # PyTorch + NCCL + fragmentation slack
+
+    total_gb = (
+        weights_gb + gradients_gb + optimizer_gb + activations_gb
+        + kv_gb + kalman_gb + moe_gb + teacher_gb + workspace_gb
+    )
+
+    return {
+        "weights_gb": weights_gb,
+        "gradients_gb": gradients_gb,
+        "optimizer_states_gb": optimizer_gb,
+        "activations_gb": activations_gb,
+        "kv_or_attention_cache_gb": kv_gb,
+        "kalman_state_gb": kalman_gb,
+        "moe_buffers_gb": moe_gb,
+        "teacher_logits_gb": teacher_gb,
+        "workspace_gb": workspace_gb,
+        "estimated_total_gb": total_gb,
+        "n_params": float(n_params),
+    }
+
+
+def estimate_compute(
+    model: SPRLv2,
+    seq_len_patches: int = 1024,
+    mean_recurrent_iterations: Optional[float] = None,
+) -> Dict[str, float]:
+    """Per-token compute accounting that respects recurrence.
+
+    `effective_flops_per_token = active_params × mean_recurrent_iterations × 6`
+      (factor 6 = forward + backward).
+
+    `active_params` is the standard convention (per-token, no recurrence
+    multiplier) so it stays comparable with published baselines.
+    """
+    cfg = model.cfg
+    if mean_recurrent_iterations is None:
+        mean_recurrent_iterations = float(cfg.dram.k_iterations_default)
+
+    # Approximate active params per recurrent step:
+    #   shared + active MoE expert params + attention + norms.
+    n_total = sum(p.numel() for p in model.parameters())
+    if cfg.moe.enabled:
+        # Each routed expert has ~3·d·expert_dim params (SwiGLU); only
+        # active_per_token of num_routed are touched per token.
+        per_expert = 3 * cfg.d_model * cfg.moe.expert_dim
+        moe_total = cfg.moe.num_routed_experts * per_expert * cfg.n_layers
+        moe_active = cfg.moe.active_per_token * per_expert * cfg.n_layers
+        # Subtract inactive MoE params from total for active-per-token figure.
+        active_params = n_total - (moe_total - moe_active)
+    else:
+        active_params = n_total
+
+    flops_per_token = 6 * active_params
+    if cfg.training.count_recurrence_in_active_flops:
+        effective = flops_per_token * mean_recurrent_iterations
+    else:
+        effective = flops_per_token
+
+    return {
+        "n_params_total": float(n_total),
+        "active_params_per_token": float(active_params),
+        "active_params_per_recurrent_step": float(active_params),
+        "mean_recurrent_iterations": float(mean_recurrent_iterations),
+        "flops_per_token_one_step": float(flops_per_token),
+        "effective_flops_per_token": float(effective),
+        "tokens_per_seq": float(seq_len_patches),
+    }
+
+
 def benchmark_memory_scaling(
     model: SPRLv2, config: Optional[MemoryScalingConfig] = None
 ) -> Dict[str, List[Dict[str, float]]]:

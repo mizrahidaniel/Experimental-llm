@@ -1,0 +1,83 @@
+# Recommended pilot @ ~100M-active params.
+#
+# Practical default: stable training, fewer interacting mechanisms, KalmanMemory
+# as a passive probe (router falls back to entropy-based until kill exp A passes),
+# tropical OFF, RG-flow OFF (diagnostic via T_b_norm log only).
+#
+# Default training mode: local CE only (no teacher). Flip
+# `training.distill_enabled: true` and set `distill_mode: sequence_level` (or
+# wire an aux byte-vocab teacher head) to enable distillation; direct
+# `teacher_token_kl` is not allowed with BLT (validation will error).
+
+d_model: 768
+n_layers: 12
+vocab_size: 256
+max_seq_len_patches: 2048
+
+patcher:
+  enabled: true                  # BLT byte-level
+  byte_lm_layers: 2
+  byte_lm_dim: 256
+  entropy_threshold: 1.5
+  max_patch_bytes: 16
+  byte_encoder_layers: 2
+  byte_encoder_dim: 384
+  patch_dim: 768
+
+attention:
+  pattern: alternating
+  layer_types: [dsa_mla, sliding_window]
+  mla:
+    d_c_latent: 384
+    d_qhead: 64
+    d_rope_decoupled: 16
+    n_heads: 12
+  dsa: {enabled: true, indexer_type: hierarchical_hisa, top_k_blocks: 8, top_k_tokens_per_block: 64, block_size: 128, dense_until_seqlen: 1024}
+  sliding: {window_size: 1024}
+  tropical: {enabled: false}     # OFF in recommended
+
+dram:
+  enabled: true
+  k_iterations_default: 2        # target_mean_k=2
+  k_max: 4
+  use_depth_attention: true
+  rg_flow:
+    enabled: false               # diagnostic only via T_b_norm; loss off
+  router:
+    enabled: false               # passive Kalman: router stays entropy-based
+    k_max: 4
+    k_target: 2
+
+kalman:
+  enabled: true                  # passive probe: state computed, log_det logged,
+  rank: 8                         # but does NOT control the router until kill
+  eps_diag: 1.0e-4                # criterion A passes at 100M scale.
+  chunk_size: 128
+
+moe:
+  enabled: true
+  num_routed_experts: 8
+  num_shared_experts: 1
+  active_per_token: 2
+  expert_dim: 1024
+  expert_grouping: heterogeneous
+  aux_loss_weight: 0.001
+
+mtp: {enabled: true, depth: 2, loss_weight: 0.3}
+
+precision: {forward_default: bf16, backward_default: bf16, master_weight_dtype: bf16}
+
+training:
+  seed: 1234
+  batch_size: 32
+  seq_len_patches: 1024
+  lr: 6.0e-3
+  warmup_steps: 1000
+  total_steps: 30000
+  grad_clip: 1.0
+  count_recurrence_in_active_flops: true   # honest accounting under recurrence
+  distill_enabled: false                   # local training only by default
+  distill_mode: teacher_token_kl           # ignored when distill_enabled=false
+  active_selection_enabled: false
+  iterative_redistill_enabled: false
+  nca_pretrain_enabled: true

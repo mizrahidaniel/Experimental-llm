@@ -190,6 +190,22 @@ class TrainingConfig:
     distill_kl_weight_init: float = 0.7
     distill_kl_weight_final: float = 0.3
     distill_cutoff_tokens: int = 300_000_000_000  # 300B tokens
+    # "teacher_token_kl" requires student/teacher vocabs to align (i.e. same
+    # tokenizer). With BLT (byte-level) student logits, set this to
+    # "sequence_level" or "auxiliary_teacher_token_head" instead.
+    distill_mode: str = "teacher_token_kl"
+
+    # Active selection (Bet C — teacher-disagreement curriculum, default off).
+    # Requires distill_enabled=True; selects training docs by student↔teacher KL
+    # with a diversity regularizer to prevent collapse onto noisy text.
+    active_selection_enabled: bool = False
+    active_selection_pool_multiplier: int = 4  # draw 4× the desired batch, keep top 1×
+    active_selection_diversity_lambda: float = 0.5
+    active_selection_diversity_history: int = 1024
+    # Iterative re-distillation pass after the main distillation phase.
+    iterative_redistill_enabled: bool = False
+    iterative_redistill_loss_gap_threshold: float = 1.2  # student/teacher loss ratio
+    iterative_redistill_passes: int = 1
 
     # NCA pre-pre-training
     nca_pretrain_enabled: bool = True
@@ -199,6 +215,12 @@ class TrainingConfig:
     # Curriculum (perplexity-correlation reweighting)
     curriculum_enabled: bool = False
     curriculum_freeze_until_tokens: int = 50_000_000_000
+
+    # Compute accounting. Setting `count_recurrence_in_active_flops=True` makes
+    # `effective_flops_per_token = active_params × mean_recurrent_iterations`
+    # in throughput / memory reports. False = report just `active_params` (the
+    # standard convention for comparison with published baselines).
+    count_recurrence_in_active_flops: bool = True
 
 
 @dataclass
@@ -233,7 +255,62 @@ class SPRLConfig:
     def from_yaml(cls, path: str) -> "SPRLConfig":
         with open(path) as f:
             raw = yaml.safe_load(f)
-        return cls.from_dict(raw)
+        cfg = cls.from_dict(raw)
+        cfg.validate()
+        return cfg
+
+    # ------------------------------------------------------------------
+    def validate(self) -> None:
+        """Hard checks for incoherent flag combinations.
+
+        Raises ValueError on configurations that would silently produce
+        meaningless training. Called by `from_yaml` / `from_dict`; callers
+        constructing `SPRLConfig` directly can call it explicitly.
+        """
+        # BLT byte-level student vs. BPE-vocab teacher: a direct teacher-token
+        # KL between a 256-class byte distribution and a 32K+ teacher vocab is
+        # nonsense. The mode flag is a future-proofing for when alternative
+        # alignment paths are wired in.
+        if (
+            self.patcher.enabled
+            and self.training.distill_enabled
+            and self.training.distill_mode == "teacher_token_kl"
+        ):
+            raise ValueError(
+                "Cannot use direct teacher-token KL with BLT byte/patch logits "
+                f"(student vocab={self.vocab_size}, teacher vocab is generally "
+                "32K+ BPE). Set training.distill_mode to 'sequence_level' or "
+                "'auxiliary_teacher_token_head', or disable BLT (patcher.enabled=false)."
+            )
+
+        # Recurrence is on but compute accounting ignores it: throughput / FLOP
+        # reports will undercount by ≈ mean_k×.
+        if (
+            self.dram.enabled
+            and self.dram.k_iterations_default > 1
+            and not self.training.count_recurrence_in_active_flops
+        ):
+            raise ValueError(
+                "Recurrent depth is enabled (k_iterations_default="
+                f"{self.dram.k_iterations_default}) but compute accounting "
+                "ignores recurrence. Set training.count_recurrence_in_active_flops=true "
+                "or set dram.k_iterations_default=1."
+            )
+
+        # Active selection requires distillation to score against.
+        if self.training.active_selection_enabled and not self.training.distill_enabled:
+            raise ValueError(
+                "training.active_selection_enabled=true requires "
+                "training.distill_enabled=true (selection scores docs by "
+                "student↔teacher KL)."
+            )
+
+        # Iterative re-distillation likewise.
+        if self.training.iterative_redistill_enabled and not self.training.distill_enabled:
+            raise ValueError(
+                "training.iterative_redistill_enabled=true requires "
+                "training.distill_enabled=true."
+            )
 
     @classmethod
     def from_dict(cls, raw: dict) -> "SPRLConfig":

@@ -96,16 +96,26 @@ def phase_post_training(model, cfg, optim, log, n_steps: int, base_step: int = 0
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--config", required=True)
+    p.add_argument("--variant", choices=["recommended", "original_bets_mini", "fallback_boring"], default=None,
+                   help="Variant shortcut (default: recommended).")
+    p.add_argument("--config", default=None, help="Explicit config path (overrides --variant).")
     p.add_argument("--steps_per_phase", type=int, default=10)
     p.add_argument("--out", default="runs/full_pretrain")
+    p.add_argument("--dry_run", action="store_true")
     args = p.parse_args()
+
+    from sprl.variants import print_variant_banner, resolve_variant_config
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    cfg = SPRLConfig.from_yaml(args.config)
+    cfg_path = resolve_variant_config(args.variant, args.config, full_run=True)
+    cfg = SPRLConfig.from_yaml(cfg_path)
     seed_everything(cfg.training.seed)
+    print_variant_banner(cfg, variant=args.variant)
+
+    if args.dry_run:
+        return
 
     model = SPRLv2(cfg)
     print(f"Built SPRLv2: {model.num_params() / 1e6:.1f}M params")
