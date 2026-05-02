@@ -4,9 +4,31 @@ This log is the durable record of kill-criterion outcomes, distillation
 cutoff used, NCA pre-pre-training effect, and ablation results. It is meant
 to be appended to as the project runs.
 
-The entries below describe the **scaffolding state** as of the first commit,
-not full-scale training results. A real run on a 5080 fills in the empty
-columns.
+The entries below describe the **scaffolding state** after the parallel-agent
+build-out, not full-scale training results. A real run on a 5080 fills in
+the empty columns.
+
+## Build-out state
+
+After parallel-agent expansion the repository contains:
+
+| Component | Status |
+|---|---|
+| Boring backbone (MLA + DSA + HISA + sliding + DRAM + MoE + MTP + byte-LM) | implemented + tested |
+| Bet A (Kalman info-form memory + active-inference router) | implemented; strict-rank streaming-SVD path on by default; TTT-mode for inference |
+| Bet B (tropical heads with softmax-large-β warmup) | implemented; β anneal scheduled |
+| Bet C (RG-flow regularizer with rank-32 Marchenko-Pastur init) | implemented; ‖T_b−I‖_F + power-law diagnostics wired |
+| BLT entropy patcher | implemented; byte-LM oracle is randomly-init (must be pretrained on 30B bytes before real use) |
+| NCA pre-pre-training | implemented; LSH and VQ-codebook tokenizers both available |
+| Distillation | top-32 sparse-logit NPZ format + resumable precompute script + sparse-KL loss + scheduler with hard cutoff |
+| Curriculum | perplexity-correlation reweighting; frozen during MoE warmup |
+| Precision | NVFP4 emulation + RHT + GaLore + 8-bit-AdamW shim; BF16 default |
+| Token-level depth recurrence | per-token K* drives `TokenLevelDRAMBlock` masked iteration |
+| Inference | speculative decoding with MTP head, KV cache, sampler, chat templates |
+| Data pipeline | 7 source loaders + `DomainMixer` with live curriculum weights; long-context 64K loader; offline synthetic fallbacks |
+| Eval | MMLU/GSM8K/HumanEval/GPQA/RULER/S5 + lm-eval-harness adapter |
+| Bench | memory scaling / throughput / decode speed |
+| Tests | **223 passing** on CPU in ~25s |
 
 ## Stage 0 — μP HP search
 
