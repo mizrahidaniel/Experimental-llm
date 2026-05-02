@@ -278,7 +278,7 @@ class SPRLConfig:
 
 
 def default_pilot_200m() -> SPRLConfig:
-    """200M-active pilot config (Stage 1)."""
+    """200M-active pilot config (legacy v2 Stage 1)."""
     cfg = SPRLConfig(
         d_model=768,
         n_layers=12,
@@ -293,20 +293,100 @@ def default_pilot_200m() -> SPRLConfig:
     return cfg
 
 
+def default_pilot_100m() -> SPRLConfig:
+    """100M-active pilot for fast (~4-hour) Stage-1 kill experiments.
+
+    Mirrors `configs/pilot_100m_bf16.yaml`. Bets A/B/C default off; turn on
+    individually for kill_exp_{A,B,C}.
+    """
+    cfg = SPRLConfig(
+        d_model=512,
+        n_layers=12,
+        max_seq_len_patches=1024,
+    )
+    cfg.patcher.byte_lm_dim = 192
+    cfg.patcher.byte_encoder_layers = 2
+    cfg.patcher.byte_encoder_dim = 256
+    cfg.patcher.patch_dim = 512
+    cfg.attention.mla.n_heads = 8
+    cfg.attention.mla.d_c_latent = 256
+    cfg.attention.mla.d_qhead = 64
+    cfg.attention.mla.d_rope_decoupled = 16
+    cfg.attention.dsa.top_k_blocks = 8
+    cfg.dram.k_iterations_default = 3
+    cfg.dram.k_max = 6
+    cfg.dram.router.k_max = 6
+    cfg.dram.router.k_target = 3
+    cfg.moe.num_routed_experts = 8
+    cfg.moe.num_shared_experts = 1
+    cfg.moe.active_per_token = 2
+    cfg.moe.expert_dim = 1024
+    cfg.training.batch_size = 32
+    cfg.training.seq_len_patches = 512
+    cfg.training.lr = 6.0e-3
+    cfg.training.warmup_steps = 1000
+    cfg.training.total_steps = 30000
+    return cfg
+
+
+def default_full_500m() -> SPRLConfig:
+    """500M-active full-run config (~2B total), the realistic Stage-3 target.
+
+    Mirrors `configs/full_500m_bf16.yaml`. All three bets default on; demote
+    individually based on Stage-1 kill outcomes. No teacher distillation in
+    the default plan (local training only); flip `training.distill_enabled`
+    to use precomputed top-32 NPZ teacher logits.
+    """
+    cfg = SPRLConfig(
+        d_model=1024,
+        n_layers=16,
+        max_seq_len_patches=8192,
+    )
+    cfg.attention.mla.n_heads = 16
+    cfg.attention.mla.d_c_latent = 384
+    cfg.attention.mla.d_qhead = 96
+    cfg.attention.mla.d_rope_decoupled = 32
+    cfg.attention.dsa.top_k_blocks = 16
+    cfg.attention.tropical.enabled = True
+    cfg.dram.k_iterations_default = 3
+    cfg.dram.k_max = 6
+    cfg.dram.use_depth_attention = True
+    cfg.dram.rg_flow.enabled = True
+    cfg.dram.router.enabled = True
+    cfg.dram.router.k_max = 6
+    cfg.dram.router.k_target = 3
+    cfg.kalman.enabled = True
+    cfg.moe.num_routed_experts = 32
+    cfg.moe.num_shared_experts = 2
+    cfg.moe.active_per_token = 4
+    cfg.moe.expert_dim = 2048
+    cfg.precision.optimizer_type = "adamw_8bit"
+    cfg.precision.use_galore = True
+    cfg.training.batch_size = 16
+    cfg.training.seq_len_patches = 1024
+    cfg.training.warmup_steps = 2000
+    cfg.training.total_steps = 100_000
+    cfg.training.distill_enabled = False
+    cfg.training.nca_pretrain_enabled = True
+    cfg.training.curriculum_enabled = True
+    cfg.training.curriculum_freeze_until_tokens = 5_000_000_000
+    return cfg
+
+
 def kill_experiment_A() -> SPRLConfig:
-    cfg = default_pilot_200m()
+    cfg = default_pilot_100m()
     cfg.kalman.enabled = True
     cfg.dram.router.enabled = True
     return cfg
 
 
 def kill_experiment_B() -> SPRLConfig:
-    cfg = default_pilot_200m()
+    cfg = default_pilot_100m()
     cfg.attention.tropical.enabled = True
     return cfg
 
 
 def kill_experiment_C() -> SPRLConfig:
-    cfg = default_pilot_200m()
+    cfg = default_pilot_100m()
     cfg.dram.rg_flow.enabled = True
     return cfg

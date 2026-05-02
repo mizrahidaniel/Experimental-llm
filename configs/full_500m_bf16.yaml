@@ -1,0 +1,111 @@
+# SPRL-v2 full pretraining @ 500M-active params (~2B total) — Stage 3 target.
+#
+# Sized to fit ≤ 1 week of single-5080 wall-clock at ~50B tokens (BF16) or
+# ~100B tokens (FP8 forward, when kernels mature). NO teacher distillation by
+# default — local training only. The `distillation` pipeline (sprl/training/
+# teacher_logits.py) is shipped but disabled here; flip `distill_enabled: true`
+# to use it on a precomputed top-32 NPZ shard tree.
+#
+# Bets are turned on per the Stage-1 kill-experiment outcomes. Defaults below
+# enable all three; demote individual bets in your local copy if their kill
+# criteria didn't pass.
+
+d_model: 1024
+n_layers: 16                  # 8 DSA-MLA + 8 sliding, alternating
+vocab_size: 256
+max_seq_len_patches: 8192
+
+patcher:
+  enabled: true
+  byte_lm_layers: 2
+  byte_lm_dim: 256
+  entropy_threshold: 1.5
+  max_patch_bytes: 16
+  byte_encoder_layers: 4
+  byte_encoder_dim: 384
+  patch_dim: 1024
+
+attention:
+  pattern: alternating
+  layer_types: [dsa_mla, sliding_window]
+  mla:
+    d_c_latent: 384            # smaller than the 1.5–2B v2 spec's 512
+    d_qhead: 96
+    d_rope_decoupled: 32
+    n_heads: 16
+  dsa:
+    enabled: true
+    indexer_type: hierarchical_hisa
+    top_k_blocks: 16
+    top_k_tokens_per_block: 64
+    block_size: 128
+    dense_until_seqlen: 1024     # InfLLM-V2 switchable
+  sliding:
+    window_size: 1024
+  tropical:
+    enabled: true                # Bet B (default on; demote if kill exp B failed)
+    fraction_of_heads: 0.25
+    beta_warmup_min: 1.0
+    beta_warmup_max: 32.0
+    warmup_fraction: 0.05
+
+dram:
+  enabled: true
+  weight_tied: true
+  k_iterations_default: 3
+  k_max: 6
+  use_depth_attention: true
+  rg_flow:
+    enabled: true                # Bet C (default on; demote if kill exp C failed)
+    rank_T_b: 32
+    init_method: marchenko_pastur
+    alpha_ramp_steps_frac: 0.1
+    alpha_target: 1.0e-3
+  router:
+    enabled: true                # active-inference router uses Bet A's log_det
+    k_max: 6
+    k_target: 3
+
+kalman:
+  enabled: true                  # Bet A (default on; demote if kill exp A failed)
+  rank: 8
+  eps_diag: 1.0e-4
+  chunk_size: 256
+
+moe:
+  enabled: true
+  num_routed_experts: 32         # smaller than v2's 64
+  num_shared_experts: 2
+  active_per_token: 4            # smaller than v2's 6
+  expert_dim: 2048               # SwiGLU FFN
+  expert_grouping: heterogeneous
+  aux_loss_weight: 0.001
+
+mtp:
+  enabled: true
+  depth: 2
+  loss_weight: 0.3
+
+precision:
+  forward_default: bf16          # Tier 1 — start here. Promote to fp8/nvfp4 only
+  backward_default: bf16         # after Tier 1 stable for 5B tokens (per spec §10.7).
+  master_weight_dtype: bf16
+  optimizer_type: adamw_8bit
+  use_galore: true
+  galore_rank: 128
+  galore_targets: [moe_expert_w1, moe_expert_w2, moe_expert_w3]
+
+training:
+  seed: 1234
+  batch_size: 16                  # smaller than v2's 32 — fits 1024-d in 16 GB w/ ckpt
+  seq_len_patches: 1024
+  lr: 3.0e-3
+  weight_decay: 0.1
+  warmup_steps: 2000
+  total_steps: 100000             # ~50B tokens at batch 16, seq 1024, ≤ 1 week BF16
+  grad_clip: 1.0
+
+  distill_enabled: false          # local training only (no teacher in default plan)
+  nca_pretrain_enabled: true      # 100–200M tokens of NCA pre-pre-training (free win)
+  curriculum_enabled: true
+  curriculum_freeze_until_tokens: 5_000_000_000

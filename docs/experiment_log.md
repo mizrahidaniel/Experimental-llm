@@ -36,7 +36,13 @@ After parallel-agent expansion the repository contains:
 |---|---|---|---|---|---|---|
 | _pending_ | | | | | | |
 
-## Stage 1 — Pilot kill experiments (200M, 50B FineWeb-Edu)
+## Stage 1 — Pilot kill experiments (100M, ~1B FineWeb-Edu, ~4 hours each)
+
+The realistic plan runs the kill experiments at **100M active params on
+~1B tokens**, taking ~4 hours of 5080 BF16 wall-clock per experiment, so
+all three can complete within 24 hours. The 200M / 50B-token configs from
+the original v2 spec (`configs/pilot_200m_*.yaml`) remain shipped for
+anyone who has the budget.
 
 ### Kill experiment A (Bet A — Kalman info-form memory)
 

@@ -6,6 +6,23 @@ This repository implements **SPRL-v2** (Sparse-Patch Recurrent Latent), an
 experimental decoder-only LM designed to train and run on a single RTX 5080
 (16 GB).
 
+## Scale targets
+
+The architecture supports two operating points; the codebase ships configs
+for both. The realistic single-5080 plan is the smaller one.
+
+| Scale | Active params | Total params | Tokens | Wall-clock | Config |
+|---|---|---|---|---|---|
+| **Realistic** (default plan) | ~500M | ~2B | 50B | ≤ 1 week BF16 | `configs/full_500m_bf16.yaml` |
+| Original ambition (v2 spec) | 1.5–2B | 16–24B | 1T | ~6 weeks | not shipped — see `docs/architecture.md` |
+| Stage-1 pilot (kill experiments) | ~80M | ~245M | 1B | ~4 hours per experiment | `configs/pilot_100m_*.yaml` |
+
+**Local training only**: the default plan does not use teacher
+distillation. The distillation pipeline (`sprl/training/teacher_logits.py`,
+`scripts/precompute_teacher_logits.py`) is shipped but disabled by default;
+flip `training.distill_enabled: true` to use precomputed top-32 NPZ teacher
+logits.
+
 It is **NOT proven to outperform Transformers.** It combines:
 
 - DeepSeek V3.2-style DSA-under-MLA sparse attention
@@ -162,10 +179,16 @@ sprl/
   utils/                   # diagnostics, logging, seeds
 
 configs/
-  pilot_200m_bf16.yaml         # baseline (no novel bets)
-  pilot_200m_kill_exp_A.yaml   # Bet A on
-  pilot_200m_kill_exp_B.yaml   # Bet B on
-  pilot_200m_kill_exp_C.yaml   # Bet C on
+  pilot_100m_bf16.yaml         # 100M baseline for fast kill experiments
+  pilot_100m_kill_exp_A.yaml   # Bet A on (Kalman info-form memory)
+  pilot_100m_kill_exp_B.yaml   # Bet B on (tropical heads)
+  pilot_100m_kill_exp_C.yaml   # Bet C on (RG-flow regularizer)
+  pilot_200m_bf16.yaml         # 200M baseline (legacy v2 pilot)
+  pilot_200m_kill_exp_A.yaml   # Bet A on at 200M
+  pilot_200m_kill_exp_B.yaml   # Bet B on at 200M
+  pilot_200m_kill_exp_C.yaml   # Bet C on at 200M
+  full_500m_bf16.yaml          # 500M-active full Stage-3 target (realistic plan)
+  fallback_boring.yaml         # all bets off (safety-net config)
 
 data/fixtures/             # Tiny offline JSONL fixtures for synthetic_phi4
                            #   and rstar_math so the data tests run with no
